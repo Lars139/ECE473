@@ -79,6 +79,9 @@ uint8_t chk_buttons(uint8_t button) {
 //array is loaded at exit as:  |digit3|digit2|colon|digit1|digit0|
 void segsum(uint16_t val) {
 
+   //Prevent ghosting
+   //FIXME: This line prevent ghosting but the button works mcuh slower
+   PORTB = ((0x8<<4) & PORTB)|(5<<4); 
    //determine how many digits there are 
    //Filling in backward
    uint8_t i;
@@ -203,6 +206,7 @@ ISR(TIMER0_OVF_vect){
 	 pressed_button ^= (1<<i);
    }
    //disable tristate buffer for pushbutton switches
+   //To do so, we use enable Y5 on the decoder (NC)
    PORTB &= 0x5F;
    if(sum>0xFFF0){
       sum += 1023;
@@ -218,7 +222,8 @@ ISR(TIMER0_OVF_vect){
    DDRB |= 0xF1;
    //PORTB = 0x00;
    //Load the mode into SPDR
-   SPDR = pressed_button;
+   SPDR = mode;
+//   SPDR = mode;
 
    //Wait until you're done sending
    while(!(SPSR & (1<<SPIF)));
@@ -367,9 +372,6 @@ uint8_t main(){
    PORTB = ((0x8<<4) & PORTB)|(digit<<4); 
    //update digit to display
    digit = (++digit)%5;
-   //FIXME: This line prevent ghosting but the button works mcuh slower
-   //Prevent ghosting
-   PORTB = ((0x8<<4) & PORTB)|(5<<4); 
    }//while
    return 0;
 }//main
