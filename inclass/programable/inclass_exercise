@@ -1,0 +1,69 @@
+Makefile Exercise
+
+Download the tarfile inclass_exercise.tar,
+  wget http://web.engr.oregonstate.edu/~traylor/ece473/inclass_exercises/makefiles/makefiles2/inclass_exercise
+and untar it into a temporary working area.
+  tar xvf inclass_exercise.tar
+
+All the component files that constitute the executable "edit" will be in 
+the directory as well as the makefile. In the directions that follow,
+the default c compiler in Linux, "cc", is used instead of the gnu 
+c compiler for the AVR "avr-gcc". The difference is of no consequence.
+
+Using the given makefile..., 
+
+1. List the series of instructions that would be executed and output to 
+   the screen by make if the makefile had never been run to create the 
+   executable "edit". On each line tell what is happening. If you are 
+   not sure what is being done, type "make clean", followed by "make". 
+   The commands executed by make will be transcripted to the shell.
+
+2. After successfully doing a "make", i.e., all the files are up to date,
+   suppose that command.h was edited. If make is executed again, what
+   commands would be executed?  
+
+   You can check your answer easily. First, check the timestamp on all 
+   your .c or .h files using "ls" with "time-style" modified to return 
+   the time stamp down to the second:
+     ls -l --time-style=+"%b %d %Y %H:%M:%S" *.*
+    (only works with GNU "ls" not BSD "ls" on a Mac)
+   Note that all the *.o files have a newer timestamp than the .c or 
+   .h files.  This tells make that the .o files are up to date. Also
+   note all the *.o files were created in the same second.
+
+   Now type "touch command.h" to modify the time stamp on command.h.
+   Execute the "ls" command again and note the different timestamp on
+   command.h. Since command.h is newer than the files that depend on
+   it (files.o, command.o, kbd.o), those files must be recreated by
+   compiling the corresponding *.c files.
+
+   So when make is run again, we should see the files that depended
+   on command.h recompiled, followed by the link.
+
+3. Now suppose that all the files were up to date and then utils.c was 
+   touched and make executed. What commands would be executed by make?
+
+4. Replace the hard tab in the second line of the rule:
+   edit : $(OBJECTS)
+         cc -o edit $(OBJECTS)
+   with 8 spaces instead. Then run make. What does make report?
+
+-------- The given Makefile is shown below ----------------------------
+
+OBJECTS = main.o kbd.o command.o display.o \
+          insert.o search.o files.o utils.o
+     
+edit : $(OBJECTS)
+	cc -o edit $(OBJECTS)
+     
+main.o    : defs.h
+files.o   : defs.h buffer.h command.h
+command.o : defs.h command.h
+kbd.o     : defs.h command.h
+display.o : defs.h buffer.h
+insert.o  : defs.h buffer.h
+search.o  : defs.h buffer.h
+utils.o   : defs.h
+clean     :
+	rm edit $(OBJECTS)
+

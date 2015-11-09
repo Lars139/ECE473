@@ -1,0 +1,60 @@
+Cursor Navigation
+  h  -- left
+  j  -- down
+  k  -- up
+  l  -- right
+  0  -- beginning of line
+  ^  -- beginning of line (non-blank)
+  $  -- end of line
+  e  -- end of the next word
+  n  -- move to the next entity
+  gg -- go to beginning of file
+  GG -- go to end of file
+
+Enter Mode of Operation
+Insert Mode:
+  i  -- enter insert mode at the cursor
+  o  -- enter insert mode with new line
+  s  -- enter insert mode AND delete the character in the cursor spot
+  I  -- enter insert mode as a block  
+Visual Mode:
+  v  -- enter visual mode
+  
+  ctrl  + v:
+    enter visual mode as Visual Block
+  
+  shift + v:
+    enter visual mode as Visual line
+    
+
+Operations
+Text Based:
+  x  -- delete the character without entering an insert mode
+  y  -- yank AKA copy
+  y$ -- yank the rest of the line
+  yy -- yank the current line
+  5yy-- yank 5 lines below
+  dd -- delete the current line
+  dw -- delete the immeidate word
+  d$ -- delete the rest of the line
+  cw -- change word
+
+Time Based:
+  u  -- undo
+  ctrl + r  : redo
+  
+Misc:
+  :  -- the god creation
+
+  :w -- write (save)
+  :q -- quit
+  :wq-- write and quit
+ 
+  :%s/pattern/replace/gi
+     find and replace globally, case-insensitively
+
+  :! <shell-command>
+     execute the shell within vim
+
+  ctrl+v , <high-light-lines> , shift+I , <comment-sequence> , esc
+     insert comment on multiple lines
