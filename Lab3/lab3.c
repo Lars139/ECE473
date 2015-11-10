@@ -56,6 +56,8 @@ uint8_t first_run_zero = 1;
 //Keep tracked of the pressed button
 uint8_t pressed_button = 0x00;
 
+   uint8_t ret_enc = 0;
+   uint8_t spdr_val = 0;
 //******************************************************************************
 //                            chk_buttons                                      
 //Checks the state of the button number passed to it. It shifts in ones till   
@@ -79,10 +81,7 @@ uint8_t chk_buttons(uint8_t button) {
 //array is loaded at exit as:  |digit3|digit2|colon|digit1|digit0|
 void segsum(uint16_t val) {
 
-   //Prevent ghosting
-   //FIXME: This line prevent ghosting but the button works mcuh slower
-   PORTB = ((0x8<<4) & PORTB)|(5<<4); 
-   //determine how many digits there are 
+      //determine how many digits there are 
    //Filling in backward
    uint8_t i;
    for( i=0; (val/10) > 0 ; ++i){
@@ -119,6 +118,9 @@ void segsum(uint16_t val) {
    segment_data[2] = 0xFF; 
    segment_data[1] = segment_data[1];
    segment_data[0] = segment_data[0];
+//Prevent ghosting
+   //FIXME: This line prevent ghosting but the button works mcuh slower
+   PORTB = ((0x8<<4) & PORTB)|(5<<4); 
 
    //now move data to right place for misplaced colon position
 }//segment_sum
@@ -208,41 +210,8 @@ ISR(TIMER0_OVF_vect){
    //disable tristate buffer for pushbutton switches
    //To do so, we use enable Y5 on the decoder (NC)
    PORTB &= 0x5F;
-   if(sum>0xFFF0){
-      sum += 1023;
-   }
-   //bound the count to 0 - 1023
-   if(sum>1023){
-      sum -= 1023;
-   }
 
    //----------------------------------------------------------- SPI_SECTION 
-   uint8_t ret_enc = 0;
-   uint8_t spdr_val = 0;
-   DDRB |= 0xF1;
-   //PORTB = 0x00;
-   //Load the mode into SPDR
-   SPDR = mode;
-//   SPDR = mode;
-
-   //Wait until you're done sending
-   while(!(SPSR & (1<<SPIF)));
-
-   DDRD = 0x04;
-   PORTD = 0x00;
-
-   DDRE = 0x40;
-   PORTE = 0x40;
-   //Strobe the BarGraph
-   PORTD |= (1<<PD2);
-   PORTD &= ~(1<<PD2);
-
-   PORTE = 0x00;
-   PORTE = 0x40;
-   //Wait for the SPDR to be filled
-   while(!(SPSR & (1<<SPIF)));
-   //Store the SPDR value
-   spdr_val = SPDR;
 
    //Send the value to read_encoder(num_enco, spdr_val);
    //Store the returning value to decide if inc or dec
@@ -359,7 +328,16 @@ uint8_t main(){
 
    //enum stages {NONE=0xFF, INC_1=0x01, INC_2=0x02, INC_4=0x04} mode;
    while(1){
+      //---------------------------------------- Edge cases
+   if(sum>0xFFF0){
+      sum += 1023;
+   }
+   //bound the count to 0 - 1023
+   if(sum>1023){
+      sum -= 1023;
+   }
 
+   //------------------------------------------------ Display 7seg
    //break up the disp_value to 4, BCD digits in the array: call (segsum)
    segsum(sum);
    //make PORTA an output
@@ -372,6 +350,33 @@ uint8_t main(){
    PORTB = ((0x8<<4) & PORTB)|(digit<<4); 
    //update digit to display
    digit = (++digit)%5;
+
+   //----------------------------------------------- SPI
+   DDRB |= 0xF1;
+   //Load the mode into SPDR
+   //SPDR = pressed_button;
+   SPDR = mode;
+
+   //Wait until you're done sending
+   while(!(SPSR & (1<<SPIF)));
+
+   DDRD = 0x04;
+   PORTD = 0x00;
+
+   DDRE = 0x40;
+   PORTE = 0x40;
+   //Strobe the BarGraph
+   PORTD |= (1<<PD2);
+   PORTD &= ~(1<<PD2);
+
+   PORTE = 0x00;
+   PORTE = 0x40;
+   //Wait for the SPDR to be filled
+   while(!(SPSR & (1<<SPIF)));
+   //Store the SPDR value
+   spdr_val = SPDR;
+
+
    }//while
    return 0;
 }//main
