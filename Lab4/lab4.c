@@ -75,8 +75,8 @@ void ADC_init(void){
    //Using external commong GND, Left-Aligned. 
    ADMUX = (1<<REFS0 | 1<<ADLAR);
 
-   //Enable ADC, Start Conversion, Free Running Mode, Interrupt, /2 prescale.
-   ADCSRA = (1<<ADEN | 1<<ADSC | 1<<ADFR | 1<<ADIE | 1<<ADPS0);
+   //Enable ADC, Start Conversion, Free Running Mode, Interrupt, /128 prescale.
+   ADCSRA = (1<<ADEN | 1<<ADSC | 1<<ADFR | 1<<ADIE | 1<<ADPS2 | 1<<ADPS1 | 1<<ADPS0);
 
 }
 
@@ -203,7 +203,7 @@ void tcnt2_init(void){
    DDRB  |= (1<<PB7);
 
    //Fast-PWM mode, no prescaling, Set OCR2 on compare match
-   TCCR2 = (1<<WGM21 | 1<<WGM20 | 1<<CS20 | 1<<COM21 | 1<<COM20)
+   TCCR2 = (1<<WGM21 | 1<<WGM20 | 1<<CS20 | 1<<COM21 | 1<<COM20);
 
    //Clear at 0x64
    OCR2  = 0xFF; 
@@ -276,6 +276,13 @@ uint8_t read_encoder(uint8_t enco_num, uint8_t spdr_val){
 
 
 ///////////////////////////////////////////////////////////  ISR_SECTION
+
+
+//-------------------------------------------------------------- ADC_ISR
+ISR(ADC_vect){
+   OCR2 = (ADCH < 100) ? (100-ADCH) : 1; 
+}
+
 
 //-------------------------------------------------------------- ISR_TIMER0
 ISR(TIMER0_OVF_vect){
@@ -431,8 +438,10 @@ ISR(TIMER1_COMPA_vect){
 
 ////////////////////////////////////////////////////////////////////////  MAIN
 uint8_t main(){
+   ADC_init();
    tcnt0_init();
    tcnt1_init();
+   tcnt2_init();
    tcnt3_init();
    spi_init();
    sei();
@@ -474,8 +483,8 @@ uint8_t main(){
       //Load the mode into SPDR
       //SPDR = pressed_button;
       //SPDR = mode;
+//FIXME:Test
       SPDR = ICR3;
-      sum = OCR3A;
 
       //Wait until you're done sending
       while(!(SPSR & (1<<SPIF)));
