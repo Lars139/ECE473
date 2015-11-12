@@ -62,7 +62,8 @@ enum stages {
 } mode;
 uint8_t snooze_button = 5;
 
-//uint8_t first_run_zero = 1;
+//For LED_indication of alarm set
+uint8_t run_led;
 
 //Keep tracked of the pressed button
 uint8_t pressed_button = 0x00;
@@ -377,8 +378,10 @@ ISR(ADC_vect){
 ISR(TIMER0_OVF_vect){
    //------------------------------------------------------- Time Keeper (sec)
    ++now.tick;
-   //TODO
+   if(now.tick == 245)
+      ++run_led;
    if(now.tick == 489){
+      ++run_led;
       ++now.sec;
       now.tick = 0;
       if(bare_status & (1<<7))
@@ -429,6 +432,7 @@ ISR(TIMER1_COMPA_vect){
  *     tick 0x1: State Machine 
  *     tick 0x2: Time Keeper (minutes, hours)
  *     tick 0x3: Mode Enforcer (Mealy Output)
+ *     tick 0x4: Check Alarm! //TODO
  *     tick 0xF: SPI
  *
  */
@@ -439,7 +443,7 @@ ISR(TIMER2_OVF_vect){
    static uint8_t sec_calibrate = 0;
    //Use toggler to check if the bit value has been change from the previos 
    //interrupt (you want to change it only once) 
-   //toggler = [ EDIT_12_24 | ...?]
+   //toggler = [ EDIT_12_24 | EDIT_ALREN | ...?]
    static uint8_t toggler;
 
    if(!(pressed_button & (1<<7)))
@@ -699,7 +703,12 @@ ISR(TIMER2_OVF_vect){
 	       break;
 
 	    case EDIT_ALREN:
+	       if(!(toggler & (1<<6))){//Has the bare_status been toggled?
+		  bare_status ^= (1<<6);
+		  toggler |= (1<<6);
+	       }
 	       break;
+
 	    case SNOOZE:
 	       break;
 	    case NONE:
@@ -727,6 +736,7 @@ uint8_t main(){
    tcnt2_init();
    tcnt3_init();
    spi_init();
+
    mode = NONE;
    segment_data[2] = 10; 
    sei();
@@ -753,8 +763,12 @@ uint8_t main(){
       //----------------------------------------------- SPI
       DDRB |= 0xF1;
       //Load the mode into SPDR
-      SPDR = mode | (pressed_button & 0b10000000);
-      //        SPDR = pressed_button;
+      if(bare_status & (1<<6)){
+	 SPDR = (pressed_button & (1<<7)) | (0xFF & 1<<((run_led)%7)); 
+      }else{
+	 SPDR = mode | (pressed_button & 0b10000000);
+	 //        SPDR = pressed_button;
+      }
 
       //Wait until you're done sending
       while(!(SPSR & (1<<SPIF)));
