@@ -44,21 +44,28 @@ uint8_t dec_to_7seg[19]={
    0xFF,//OFF (10)
    0x7F};//Full Colon (11)
 
+//For 7seg number string display
 uint16_t sum=0;
 uint8_t  digit=0;
 uint8_t  inc_step = 1;
-//Contributors of 7seg decoder: Keenan Bishop, Matt ????, Bear
 
 //Stages for the buttons
-enum stages {NONE=0xFF, INC_1=0x01, INC_2=0x02, INC_4=0x04} mode;
+enum stages {
+   NONE=0x0, 
+   EDIT_STIME=0b10000001, EDIT_12_24=0b10000010, EDIT_ALARM=0b10000100,
+   SNOOZE=0b01111111
+} mode;
+static uint8_t snooze_button;
 
-uint8_t first_run_zero = 1;
+//uint8_t first_run_zero = 1;
 
 //Keep tracked of the pressed button
 uint8_t pressed_button = 0x00;
 
-uint8_t ret_enc = 0;
-uint8_t spdr_val = 0;
+//For the SPI communicatino 
+uint8_t ret_enc = 0;    //return val from Encoder
+uint8_t spdr_val = 0;   //value in SPDR
+
 
 
 ///////////////////////////////////////////////////////////////////////    ADC 
@@ -120,19 +127,10 @@ void segsum(uint16_t val) {
 	 segment_data[j] = 0xA;
       }
    }else{//In case val == 0
-      if(first_run_zero){
-	 segment_data[3] = 0x0 ;
-	 segment_data[2] = 0x0;
-	 segment_data[1] = 0x0;
-	 segment_data[0] = 0x0;
-
-      }else{
-	 segment_data[3] = 0x1 ;
-	 segment_data[2] = 0x0;
-	 segment_data[1] = 0x2;
-	 segment_data[0] = 0x3;
-
-      }
+      segment_data[3] = 0x0 ;
+      segment_data[2] = 0x0;
+      segment_data[1] = 0x0;
+      segment_data[0] = 0x0;
    }
    //Translate to 7seg
    segment_data[4] = segment_data[3];
@@ -142,7 +140,6 @@ void segsum(uint16_t val) {
    segment_data[1] = segment_data[1];
    segment_data[0] = segment_data[0];
    //Prevent ghosting
-   //FIXME: This line prevent ghosting but the button works mcuh slower
    PORTB = ((0x8<<4) & PORTB)|(5<<4); 
 
    //now move data to right place for misplaced colon position
@@ -195,12 +192,19 @@ void tcnt1_init(void){
 /* Func: tcnt2_init()
  * Desc: Initilize timer/counter2 (TCNT2) as a light dimmer (PWM) 
  * 	 PWM Mode, No pre-scaling
+ *
+ * 	 The Overflow of this counter will be used to check the 
+ * 	 button and encoder
+ *
  * Input : None
  * Output: None
  */
 void tcnt2_init(void){
    //PORTB Pin7 as an output for PWM waveform
    DDRB  |= (1<<PB7);
+
+   //Enable interrupt for the TCNT2 for button check and encoder
+   TIMSK |= (1<<TOIE2);
 
    //Fast-PWM mode, no prescaling, Set OCR2 on compare match
    TCCR2 = (1<<WGM21 | 1<<WGM20 | 1<<CS20 | 1<<COM21 | 1<<COM20);
@@ -220,13 +224,13 @@ void tcnt3_init(void){
    //PORTE Pin1 as an output for PWM waveform
    DDRE  |= (1<<PE3);
 
-   //Fast-PWM mode, no prescaling, ICR3 top, OCR3A comp 
+   //Fast-PWM mode, no prescaling, ICR3 top, OCR3A comp (clear on match) 
    TCCR3A = (1<<COM3A1 | 1<<COM3A0 | 1<<WGM31);
    TCCR3B = (1<<WGM33 | 1<<WGM32 | 1<<CS30);
 
-   //Clear at 0x64
-   ICR3   = 0x64;
-   OCR3A  = 0x64; 
+   //FIXME: NOT WORKING!
+   ICR3   = 0xFF;
+   OCR3A  = 0xFF; 
 }
 
 
@@ -261,11 +265,11 @@ uint8_t read_encoder(uint8_t enco_num, uint8_t spdr_val){
    if( cur_enco == 0b11 ){
       if( (enco_trend[enco_num]>1) && (enco_trend[enco_num]<100) ){
 	 out = ENCO_CW;
-	 first_run_zero = 0;
+	 //first_run_zero = 0;
       }
       if( (enco_trend[enco_num]<=0xFF) && (enco_trend[enco_num]>0x90) ){
 	 out = ENCO_CCW;
-	 first_run_zero = 0;
+	 //first_run_zero = 0;
       }
       enco_trend[enco_num] = 0;
    }
@@ -296,121 +300,40 @@ ISR(TIMER0_OVF_vect){
 
    //---------------------------------------------------------- TCNT3_Tone
    //Set at 0x8000
-   OCR3A; 
+   //ICR3 = ADCH; 
 
-   //---------------------------------------------------------- BUTTON_&_7-SEG
-   //make PORTA an input port with pullups 
-   DDRA = 0x00;
-   PORTA = 0xFF;
-   //enable tristate buffer for pushbutton switches
-   PORTB = 0x70;
-   //now check each button and increment the count as needed
-   for(uint8_t i=0; i<8; ++i){
-      if(chk_buttons(i))
-	 pressed_button ^= (1<<i);
-   }
-   //disable tristate buffer for pushbutton switches
-   //To do so, we use enable Y5 on the decoder (NC)
-   PORTB &= 0x5F;
-
-   //----------------------------------------------------------- SPI_SECTION 
-
-   //Send the value to read_encoder(num_enco, spdr_val);
-   //Store the returning value to decide if inc or dec
-   ret_enc = read_encoder(0, spdr_val);
-   //Inc/Dec the sum accordingly
-   if(ret_enc == ENCO_CW){ //CW adding the sum
-      sum += inc_step;
-   }else if(ret_enc == ENCO_CCW){
-      sum -= inc_step;
-   }
-
-   ret_enc = read_encoder(1, spdr_val);
-   //Inc/Dec the sum accordingly
-   if(ret_enc == ENCO_CW){ //CW adding the sum
-      sum += inc_step;
-   }else if(ret_enc == ENCO_CCW){
-      sum -= inc_step;
-   }
 
    //----------------------------------------------------------- STATE_MACHINE 
    switch(mode){
+/*
+enum stages {
+   NONE=0x0, 
+   EDIT_STIME=0b10000001, EDIT_12_24=0b10000010, EDIT_ALARM=0b10000100
+} mode;
+*/
 
-      case INC_1:
-	 if( (pressed_button & (1<<1)) &&
-	       (pressed_button & (1<<0))    ){
-	    mode = NONE;
-	 }else if(   (pressed_button & (1<<1)) &&
-	       !(pressed_button & (1<<0))    ){
-	    mode = INC_4;
-	 }else if(  !(pressed_button & (1<<1)) &&
-	       (pressed_button & (1<<0))    ){
-	    mode = INC_2;
-	 }else if(  !(pressed_button & (1<<1)) &&
-	       !(pressed_button & (1<<0))    ){
-	    mode = INC_1;
-	 }
-	 inc_step = 1;
-
-
-	 break;
-
-      case INC_2:
-	 if( (pressed_button & (1<<1)) &&
-	       (pressed_button & (1<<0))    ){
-	    mode = NONE;
-	 }else if(   (pressed_button & (1<<1)) &&
-	       !(pressed_button & (1<<0))    ){
-	    mode = INC_4;
-	 }else if(  !(pressed_button & (1<<1)) &&
-	       (pressed_button & (1<<0))    ){
-	    mode = INC_2;
-	 }else if(  !(pressed_button & (1<<1)) &&
-	       !(pressed_button & (1<<0))    ){
-	    mode = INC_1;
-	 }
-
-	 inc_step = 2;
-
-	 break;
-
-      case INC_4:
-	 if( (pressed_button & (1<<1)) &&
-	       (pressed_button & (1<<0))    ){
-	    mode = NONE;
-	 }else if(   (pressed_button & (1<<1)) &&
-	       !(pressed_button & (1<<0))    ){
-	    mode = INC_4;
-	 }else if(  !(pressed_button & (1<<1)) &&
-	       (pressed_button & (1<<0))    ){
-	    mode = INC_2;
-	 }else if(  !(pressed_button & (1<<1)) &&
-	       !(pressed_button & (1<<0))    ){
-	    mode = INC_1;
-	 }
-
-	 inc_step = 4;
-	 break;
       case NONE:
-	 //Only care about S1, S0  button
-	 if( (pressed_button & (1<<1)) &&
+	 if( (pressed_button & (1<<7)) &&
 	       (pressed_button & (1<<0))    ){
+	    mode = EDIT_STIME;
+	 }else if(   (pressed_button & (1<<7)) &&
+	       (pressed_button & (1<<1))    ){
+	    mode = EDIT_12_24;
+	 }else if(  (pressed_button & (1<<7)) &&
+	       (pressed_button & (1<<2))    ){
+	    mode = EDIT_ALARM;
+	 }else if( ~(pressed_button & (1<<7)) && 
+	       (pressed_button & (1<<snooze_button))  ){
+	    mode = SNOOZE;
+	 }else{
 	    mode = NONE;
-	 }else if(  (pressed_button & (1<<1)) &&
-	       !(pressed_button & (1<<0))    ){
-	    mode = INC_4;
-	 }else if(  !(pressed_button & (1<<1)) &&
-	       (pressed_button & (1<<0))    ){
-	    mode = INC_2;
 	 }
-	 inc_step = 0;
-
-
 	 break;
 
       default:
-	 mode = INC_1;
+	 mode = NONE;
 	 break;
+
    }//End Here -- Switch(mode)
 
    return;
@@ -429,11 +352,63 @@ ISR(TIMER1_COMPA_vect){
    //Using PORTC Pin2 as an output
    PORTC ^= (1<<PC2);
    if(beat >= max_beat){
-      play_note('A'+(rand()%7),rand()%2,6+(rand()%3),rand()%8);
+      play_note('A'+(rand()%7),rand()%2,6+(rand()%3),rand()%16);
       //      play_note('A',0,5,8);
       notes = (++notes)%12;
    }
 }
+
+
+//---------------------------------------------------------------- ISR_TIMER2
+/* ISR_TIMER2_COMPA_vect
+ *     The interrupt is used to handle button and encoder I/O
+ *
+ */
+ISR(TIMER2_OVF_vect){
+   static uint8_t tcnt2_cntr = 0;
+   switch (tcnt2_cntr){
+      case 0x0:
+      //---------------------------------------------------------- BUTTON_&_7-SEG
+      //make PORTA an input port with pullups 
+      DDRA = 0x00;
+      PORTA = 0xFF;
+      //enable tristate buffer for pushbutton switches
+      PORTB = 0x70;
+      //now check each button and increment the count as needed
+      for(uint8_t i=0; i<8; ++i){
+      if(chk_buttons(i))
+      pressed_button ^= (1<<i);
+      }
+      //disable tristate buffer for pushbutton switches
+      //To do so, we use enable Y5 on the decoder (NC)
+      PORTB &= 0x5F;
+      break;
+
+      case 0xF:
+      //----------------------------------------------------------- SPI_SECTION 
+      //Send the value to read_encoder(num_enco, spdr_val);
+      //Store the returning value to decide if inc or dec
+      ret_enc = read_encoder(0, spdr_val);
+      //Inc/Dec the sum accordingly
+      if(ret_enc == ENCO_CW){ //CW adding the sum
+	 sum += inc_step;
+      }else if(ret_enc == ENCO_CCW){
+	 sum -= inc_step;
+      }
+
+      ret_enc = read_encoder(1, spdr_val);
+      //Inc/Dec the sum accordingly
+      if(ret_enc == ENCO_CW){ //CW adding the sum
+	 sum += inc_step;
+      }else if(ret_enc == ENCO_CCW){
+	 sum -= inc_step;
+      }
+      break;
+
+   }
+   ++tcnt2_cntr;
+}
+
 
 
 ////////////////////////////////////////////////////////////////////////  MAIN
@@ -444,25 +419,15 @@ uint8_t main(){
    tcnt2_init();
    tcnt3_init();
    spi_init();
+   mode = NONE;
+   snooze_button = rand()%7;
    sei();
 
    //PORTB=[ pwm | encd_sel2 | encd_sel1 | encd_sel0 | MISO | MOSI | SCK | SS ]
    //set port bits 4-7 B as outputs
-   mode = INC_1;
 
    //enum stages {NONE=0xFF, INC_1=0x01, INC_2=0x02, INC_4=0x04} mode;
    while(1){
-      //---------------------------------------- Edge cases
-      /*
-	 if(sum>0xFFF0){
-	 sum += 1023;
-	 }
-      //bound the count to 0 - 1023
-      if(sum>1023){
-      sum -= 1023;
-      }
-      */
-      sum %= 1023;
 
       //------------------------------------------------ Display 7seg
       //break up the disp_value to 4, BCD digits in the array: call (segsum)
@@ -481,10 +446,8 @@ uint8_t main(){
       //----------------------------------------------- SPI
       DDRB |= 0xF1;
       //Load the mode into SPDR
-      //SPDR = pressed_button;
-      //SPDR = mode;
-//FIXME:Test
-      SPDR = ICR3;
+      SPDR = pressed_button;
+      //      SPDR = mode;
 
       //Wait until you're done sending
       while(!(SPSR & (1<<SPIF)));
