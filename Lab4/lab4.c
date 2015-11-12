@@ -15,6 +15,7 @@
 #include <avr/interrupt.h>
 #include <util/delay.h>
 #include "music.c"
+#include "LCDDriver.h"
 
 //-------------------Encoder control
 #define NUM_OF_ENCO 2
@@ -430,12 +431,12 @@ ISR(TIMER0_OVF_vect){
  */
 ISR(TIMER1_COMPA_vect){
    //Should it be making sound? 
-//   if(bare_status & (1<<5)){
+   if(bare_status & (1<<5)){
       //Using PORTC Pin2 as an output
       PORTC ^= (1<<PC2);
       if(beat >= max_beat){
 	 play_note('A'+(rand()%7),rand()%2,6+(rand()%3),rand()%16);
-  //    }
+      }
    }
 }
 
@@ -460,6 +461,9 @@ ISR(TIMER2_OVF_vect){
    //interrupt (you want to change it only once) 
    //toggler = [ EDIT_12_24 | EDIT_ALREN | SNOOZE | sound_alarm ...?]
    static uint8_t toggler;
+
+   static uint8_t lcd_idx;
+   char LCD_string[16] ="ALARMALARMALARMALARMA"; 
 
    if(!(pressed_button & (1<<7)))
       toggler = 0x00;
@@ -747,6 +751,7 @@ ISR(TIMER2_OVF_vect){
 		  //Turn off the noise
 		  bare_status ^= (1<<5); 
 		  toggler |= (1<<5);
+   LCD_Clr();
 		  //Clear alarm bit so it can go off again
 		  toggler &= ~(1<<4);
 	       }
@@ -790,14 +795,21 @@ ISR(TIMER2_OVF_vect){
 		     &&(now.sec == atime.sec)) || ((now.hr == ztime.hr)&&
 		     (now.min == ztime.min)&&(now.sec == ztime.sec)))
 	       if(!(toggler & (1<<4))){//Has the bare_status been toggled?
+		  
 		  //Set the alarm off
+		  //TODO: Fix this
+		  //TODO: set the limit for the volumn
 		  bare_status |= (1<<5); 
+		  LCD_Clr();
+		  LCD_PutStr("ALARMALARMALARMALARM");
 		  toggler |= (1<<4);
 	       }
+
 	 }else{
 	    if(!(toggler & (1<<4))){//Has the bare_status been toggled?
 	       //Turn off alarm if alarm is not set
 	       bare_status &= ~(1<<5); 
+	       LCD_Clr();
 	       toggler |= (1<<4);
 	    }
 	 }
@@ -817,6 +829,7 @@ uint8_t main(){
    tcnt2_init();
    tcnt3_init();
    spi_init();
+   LCD_Init();
 
    segment_data[2]=11;
    mode = NONE;
