@@ -133,6 +133,8 @@ uint8_t chk_buttons(uint8_t button) {
 //BCD segment code in the array segment_data for display.                       
 //array is loaded at exit as:  |digit3|digit2|colon|digit1|digit0|
 void segsum(uint16_t val) {
+   //Let's not use colon here
+   bare_status &= ~(1<<7);
    //determine how many digits there are 
    //Filling in backward
    uint8_t i;
@@ -153,7 +155,6 @@ void segsum(uint16_t val) {
    }else{//In case val == 0
       segment_data[4] = 0x0 ;
       segment_data[3] = 0x0 ;
-      segment_data[2] = 0xFF;
       segment_data[1] = 0x0;
       segment_data[0] = 0x0;
    }
@@ -162,12 +163,14 @@ void segsum(uint16_t val) {
    PORTB = ((0x8<<4) & PORTB)|(5<<4); 
 }//segment_sum
 
+//Displaying time
 void disp_time(void){
-   segment_data[4] = now.min/10;
-   segment_data[3] = now.min%10 ;
-   segment_data[2] = 11;
-   segment_data[1] = now.sec/10;
-   segment_data[0] = now.sec%10;
+   //Colon enabled
+   bare_status |= (1<<7);
+   segment_data[4] = now.hr/10;
+   segment_data[3] = now.hr%10 ;
+   segment_data[1] = now.min/10;
+   segment_data[0] = now.min%10;
 
    //Prevent ghosting
    PORTB = ((0x8<<4) & PORTB)|(5<<4); 
@@ -325,13 +328,15 @@ ISR(TIMER0_OVF_vect){
    if(now.tick == 489){
       ++now.sec;
       now.tick = 0;
+      if(bare_status & (1<<7))
+      segment_data[2] = (segment_data[2] == 10) ? 11 : 10;
    }
-/*
-   if(now.sec >= 60){
+   /*
+      if(now.sec >= 60){
       bare_flags |= (1<<0);
       now.sec = 0;
-   }
-   */
+      }
+      */
 
    //----------------------------------------------------------- Music Timing
    static uint8_t ms = 0;
@@ -341,7 +346,6 @@ ISR(TIMER0_OVF_vect){
       beat++;
    }        
 
-   return;
 }
 
 //---------------------------------------------------------------- ISR_TIMER1
@@ -354,7 +358,8 @@ ISR(TIMER0_OVF_vect){
  *
  */
 ISR(TIMER1_COMPA_vect){
-   if(bare_status & 0b00100000){
+   //Should it be making sound? 
+   if(bare_status & (1<<5)){
       //Using PORTC Pin2 as an output
       PORTC ^= (1<<PC2);
       if(beat >= max_beat){
@@ -563,6 +568,9 @@ ISR(TIMER2_OVF_vect){
 
       case 0x3:
 	 //-----------------------------------------------------Display Manager
+	 //Enforcing no colon policy
+	 if( !(bare_status & (1<<7)) )
+	    segment_data[2] = 0xFF;
 	 switch(mode){
 	    case EDIT_STIME:
 	       break;
@@ -618,7 +626,7 @@ uint8_t main(){
    tcnt3_init();
    spi_init();
    mode = NONE;
-   now.sec=55;
+   segment_data[2] = 10; 
    sei();
    //PORTB=[ pwm | encd_sel2 | encd_sel1 | encd_sel0 | MISO | MOSI | SCK | SS ]
    //set port bits 4-7 B as outputs
