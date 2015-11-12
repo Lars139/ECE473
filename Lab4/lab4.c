@@ -67,6 +67,13 @@ uint8_t pressed_button = 0x00;
 uint8_t ret_enc = 0;    //return val from Encoder
 uint8_t spdr_val = 0;   //value in SPDR
 
+//For Timekeeping
+static struct time_info{
+   uint8_t hr;
+   uint8_t min;
+   uint8_t sec;
+   uint16_t tick;
+} now;
 
 
 ///////////////////////////////////////////////////////////////////////    ADC 
@@ -111,39 +118,33 @@ uint8_t chk_buttons(uint8_t button) {
 //BCD segment code in the array segment_data for display.                       
 //array is loaded at exit as:  |digit3|digit2|colon|digit1|digit0|
 void segsum(uint16_t val) {
-
    //determine how many digits there are 
    //Filling in backward
    uint8_t i;
    for( i=0; (val/10) > 0 ; ++i){
+      if(i==2){
+	 segment_data[i] = 0xFF;
+	 ++i;
+      } 
       segment_data[i] = val%10;
       val /= 10;
    }
    if(val != 0){
       segment_data[i] = val;
       val = 0;
-      //if I do that my max_i is 2....
       for(uint8_t j=i+1; j<5; ++j){
-	 //	segment_data[j] = 0xC0;
 	 segment_data[j] = 0xA;
       }
    }else{//In case val == 0
+      segment_data[4] = 0x0 ;
       segment_data[3] = 0x0 ;
-      segment_data[2] = 0x0;
+      segment_data[2] = 0xFF;
       segment_data[1] = 0x0;
       segment_data[0] = 0x0;
    }
-   //Translate to 7seg
-   segment_data[4] = segment_data[3];
-   segment_data[3] = segment_data[2];
-   //segment_data[2] = (dec_to_7seg[segment_data[2]]);
-   segment_data[2] = 0xFF; 
-   segment_data[1] = segment_data[1];
-   segment_data[0] = segment_data[0];
+
    //Prevent ghosting
    PORTB = ((0x8<<4) & PORTB)|(5<<4); 
-
-   //now move data to right place for misplaced colon position
 }//segment_sum
 
 /***********************************************************************/
@@ -291,6 +292,14 @@ ISR(ADC_vect){
 
 //-------------------------------------------------------------- ISR_TIMER0
 ISR(TIMER0_OVF_vect){
+   //------------------------------------------------------- Time Keeper (sec)
+   ++now.tick;
+   //TODO
+   if(now.tick == 4089){
+      ++now.sec;
+      now.tick = 0;
+   }
+
    //----------------------------------------------------------- Music Timing
    static uint8_t ms = 0;
    ms++;
@@ -298,11 +307,6 @@ ISR(TIMER0_OVF_vect){
       //for note duration (64th notes) 
       beat++;
    }        
-
-   //---------------------------------------------------------- TCNT3_Tone
-   //Set at 0x8000
-   //ICR3 = ADCH; 
-
 
    return;
 }
@@ -321,23 +325,28 @@ ISR(TIMER1_COMPA_vect){
    PORTC ^= (1<<PC2);
    if(beat >= max_beat){
       play_note('A'+(rand()%7),rand()%2,6+(rand()%3),rand()%16);
-      //      play_note('A',0,5,8);
-      notes = (++notes)%12;
    }
 }
 
 
 //---------------------------------------------------------------- ISR_TIMER2
-/* ISR_TIMER2_COMPA_vect
- *     The interrupt is used to handle button and encoder I/O
+/* ISR_TIMER2_OVF_vect
+ *     The interrupt is a general purpose interrupt
+ *     tick 0x0: Check Button
+ *     tick 0x1: State Machine 
+ *     tick 0x2: Time Keeper (minutes, hours)
+ *     tick 0x3: Mode Display control (Mealy Output)
+ *     tick 0xF: SPI
  *
  */
 ISR(TIMER2_OVF_vect){
    //Scaling down the ISR so it doesn't hord up all the processing time
    static uint8_t tcnt2_cntr = 0;
+   //Calibrating for the crystal time off
+   static uint8_t sec_calibrate = 0;
    switch (tcnt2_cntr){
       case 0x0:
-	 //--------------------------------------------------------- BUTTON_&_7-SEG
+	 //----------------------------------------------------- BUTTON_&_7-SEG
 	 //make PORTA an input port with pullups 
 	 DDRA = 0x00;
 	 PORTA = 0xFF;
@@ -346,15 +355,15 @@ ISR(TIMER2_OVF_vect){
 	 //now check each button and increment the count as needed
 	 for(uint8_t i=0; i<8; ++i){
 	    if(chk_buttons(i))
-		  pressed_button ^= (1<<i);
+	       pressed_button ^= (1<<i);
 	 }
 	 //disable tristate buffer for pushbutton switches
 	 //To do so, we use enable Y5 on the decoder (NC)
 	 PORTB &= 0x5F;
 	 break;
 
-      case 0xA:
-	 //----------------------------------------------------------- STATE_MACHINE 
+      case 0x1:
+	 //----------------------------------------------------- STATE_MACHINE 
 	 switch(mode){
 	    case NONE:
 	       if(pressed_button & (1<<7)){
@@ -489,8 +498,57 @@ ISR(TIMER2_OVF_vect){
 	 }//End Here -- Switch(mode)
 	 break;//End Here -- 0xA;
 
+      case 0x2:
+	 //------------------------------------------------------ Time Keeper
+
+	 //Check if a delayed second has been full.
+	 if((sec_calibrate == 11) && (now.sec == 20)){
+	    ++now.sec;
+	    sec_calibrate = 0;
+	 }
+
+	 //Check if a full minute
+	 if(now.sec == 60){
+	    now.sec = 0;
+	    ++now.min;
+	    ++sec_calibrate;
+	 }
+
+	 //Check if a full hour
+	 if(now.min == 60){
+	    now.min = 0;
+	    ++now.hr;
+	 }
+
+	 //Check if a full day
+	 if(now.hr ==24){
+	    now.hr = 0;
+	 }
+	 break;
+
+      case 0x3:
+	 //-----------------------------------------------------Display Manager
+	 switch(mode){
+	    case EDIT_STIME:
+	       break;
+	    case EDIT_12_24:
+	       break;
+	    case EDIT_ATIME:
+	       break;
+	    case EDIT_ALREN:
+	       break;
+	    case SNOOZE:
+	       break;
+	    case NONE:
+	       break;
+	 }
+
+
+
+	 break;
+
       case 0xF:
-	 //----------------------------------------------------------- SPI_SECTION 
+	 //------------------------------------------------------ SPI_SECTION 
 	 //Send the value to read_encoder(num_enco, spdr_val);
 	 //Store the returning value to decide if inc or dec
 	 ret_enc = read_encoder(0, spdr_val);
@@ -549,7 +607,7 @@ uint8_t main(){
       DDRB |= 0xF1;
       //Load the mode into SPDR
       SPDR = mode | (pressed_button & 0b10000000);
-//        SPDR = pressed_button;
+      //        SPDR = pressed_button;
 
       //Wait until you're done sending
       while(!(SPSR & (1<<SPIF)));
