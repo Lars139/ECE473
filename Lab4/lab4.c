@@ -77,7 +77,7 @@ static struct time_info{
    uint8_t min;
    uint8_t sec;
    uint16_t tick;
-} now;
+} now, atime;
 
 //A status byte containing all the toggling bits
 //status = [ 7seg_mode_disp | arm_alarm | sound_alarm | ...??? ]
@@ -176,28 +176,53 @@ void segsum(uint16_t val) {
 void disp_time(void){
    //Colon enabled
    bare_status |= (1<<7);
-
-   if(bare_status & (1<<4)){ //AM-PM mode
-      if(now.hr > 12){
-	 segment_data[4] = ((now.hr-12)/10) + 12; //0. or 1.
-	 segment_data[3] = ((now.hr-12)%10);
-      }else if(now.hr == 0){
-	 segment_data[4] = 1;
-	 segment_data[3] = 2;
-      }else if(now.hr == 12){
-	 segment_data[4] = 13; //1.
-	 segment_data[3] = 2; 
+   if(mode != EDIT_ATIME){
+      if(bare_status & (1<<4)){ //AM-PM mode
+	 if(now.hr > 12){
+	    segment_data[4] = ((now.hr-12)/10) + 12; //0. or 1.
+	    segment_data[3] = ((now.hr-12)%10);
+	 }else if(now.hr == 0){
+	    segment_data[4] = 1;
+	    segment_data[3] = 2;
+	 }else if(now.hr == 12){
+	    segment_data[4] = 13; //1.
+	    segment_data[3] = 2; 
+	 }else{
+	    segment_data[4] = now.hr/10;
+	    segment_data[3] = now.hr%10;
+	 }
+	 segment_data[1] = now.min/10;
+	 segment_data[0] = now.min%10;
       }else{
 	 segment_data[4] = now.hr/10;
-	 segment_data[3] = now.hr%10;
+	 segment_data[3] = now.hr%10 ;
+	 segment_data[1] = now.min/10;
+	 segment_data[0] = now.min%10;
       }
-      segment_data[1] = now.min/10;
-      segment_data[0] = now.min%10;
    }else{
-      segment_data[4] = now.hr/10;
-      segment_data[3] = now.hr%10 ;
-      segment_data[1] = now.min/10;
-      segment_data[0] = now.min%10;
+      if(bare_status & (1<<4)){ //AM-PM mode
+	 if(atime.hr > 12){
+	    segment_data[4] = ((atime.hr-12)/10) + 12; //0. or 1.
+	    segment_data[3] = ((atime.hr-12)%10);
+	 }else if(atime.hr == 0){
+	    segment_data[4] = 1;
+	    segment_data[3] = 2;
+	 }else if(atime.hr == 12){
+	    segment_data[4] = 13; //1.
+	    segment_data[3] = 2; 
+	 }else{
+	    segment_data[4] = atime.hr/10;
+	    segment_data[3] = atime.hr%10;
+	 }
+	 segment_data[1] = atime.min/10;
+	 segment_data[0] = atime.min%10;
+      }else{
+	 segment_data[4] = atime.hr/10;
+	 segment_data[3] = atime.hr%10 ;
+	 segment_data[1] = atime.min/10;
+	 segment_data[0] = atime.min%10;
+      }
+
    }
 
    //Prevent ghosting
@@ -643,8 +668,36 @@ ISR(TIMER2_OVF_vect){
 		  toggler |= (1<<7);
 	       }
 	       break;
+
 	    case EDIT_ATIME:
+	       //Send the value to read_encoder(num_enco, spdr_val);
+	       //Store the returning value to decide if inc or dec
+	       ret_enc = read_encoder(1, spdr_val);
+	       //Inc/Dec the sum accordingly
+	       if(ret_enc == ENCO_CW){ //CW adding the sum
+		  atime.hr += 1;
+	       }else if(ret_enc == ENCO_CCW){
+		  atime.hr -= 1;
+	       }
+
+	       ret_enc = read_encoder(0, spdr_val);
+	       //Inc/Dec the sum accordingly
+	       if(ret_enc == ENCO_CW){ //CW adding the sum
+		  atime.min += 1;
+	       }else if(ret_enc == ENCO_CCW){
+		  if(atime.min != 0)
+		     atime.min -= 1;
+	       }
+
+	       if(atime.hr >= 24){
+		  atime.hr = 0;
+	       }
+	       if(atime.min >= 60){
+		  atime.min = 0;
+		  ++atime.hr;
+	       }
 	       break;
+
 	    case EDIT_ALREN:
 	       break;
 	    case SNOOZE:
