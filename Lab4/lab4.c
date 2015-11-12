@@ -52,10 +52,11 @@ uint8_t  inc_step = 1;
 //Stages for the buttons
 enum stages {
    NONE=0x0, 
-   EDIT_STIME=0b10000001, EDIT_12_24=0b10000010, EDIT_ALARM=0b10000100,
+   EDIT_STIME=0b10000001, EDIT_12_24=0b10000010, EDIT_ATIME=0b10000100,
+   EDIT_ALREN=0b10001000,
    SNOOZE=0b01111111
 } mode;
-static uint8_t snooze_button;
+uint8_t snooze_button = 5;
 
 //uint8_t first_run_zero = 1;
 
@@ -303,39 +304,6 @@ ISR(TIMER0_OVF_vect){
    //ICR3 = ADCH; 
 
 
-   //----------------------------------------------------------- STATE_MACHINE 
-   switch(mode){
-/*
-enum stages {
-   NONE=0x0, 
-   EDIT_STIME=0b10000001, EDIT_12_24=0b10000010, EDIT_ALARM=0b10000100
-} mode;
-*/
-
-      case NONE:
-	 if( (pressed_button & (1<<7)) &&
-	       (pressed_button & (1<<0))    ){
-	    mode = EDIT_STIME;
-	 }else if(   (pressed_button & (1<<7)) &&
-	       (pressed_button & (1<<1))    ){
-	    mode = EDIT_12_24;
-	 }else if(  (pressed_button & (1<<7)) &&
-	       (pressed_button & (1<<2))    ){
-	    mode = EDIT_ALARM;
-	 }else if( ~(pressed_button & (1<<7)) && 
-	       (pressed_button & (1<<snooze_button))  ){
-	    mode = SNOOZE;
-	 }else{
-	    mode = NONE;
-	 }
-	 break;
-
-      default:
-	 mode = NONE;
-	 break;
-
-   }//End Here -- Switch(mode)
-
    return;
 }
 
@@ -365,45 +333,182 @@ ISR(TIMER1_COMPA_vect){
  *
  */
 ISR(TIMER2_OVF_vect){
+   //Scaling down the ISR so it doesn't hord up all the processing time
    static uint8_t tcnt2_cntr = 0;
    switch (tcnt2_cntr){
       case 0x0:
-      //---------------------------------------------------------- BUTTON_&_7-SEG
-      //make PORTA an input port with pullups 
-      DDRA = 0x00;
-      PORTA = 0xFF;
-      //enable tristate buffer for pushbutton switches
-      PORTB = 0x70;
-      //now check each button and increment the count as needed
-      for(uint8_t i=0; i<8; ++i){
-      if(chk_buttons(i))
-      pressed_button ^= (1<<i);
-      }
-      //disable tristate buffer for pushbutton switches
-      //To do so, we use enable Y5 on the decoder (NC)
-      PORTB &= 0x5F;
-      break;
+	 //--------------------------------------------------------- BUTTON_&_7-SEG
+	 //make PORTA an input port with pullups 
+	 DDRA = 0x00;
+	 PORTA = 0xFF;
+	 //enable tristate buffer for pushbutton switches
+	 PORTB = 0x70;
+	 //now check each button and increment the count as needed
+	 for(uint8_t i=0; i<8; ++i){
+	    if(chk_buttons(i))
+		  pressed_button ^= (1<<i);
+	 }
+	 //disable tristate buffer for pushbutton switches
+	 //To do so, we use enable Y5 on the decoder (NC)
+	 PORTB &= 0x5F;
+	 break;
+
+      case 0xA:
+	 //----------------------------------------------------------- STATE_MACHINE 
+	 switch(mode){
+	    case NONE:
+	       if(pressed_button & (1<<7)){
+		  if (pressed_button & (1<<0)){
+		     mode = EDIT_STIME;
+		  }else if(pressed_button & (1<<1)){
+		     mode = EDIT_12_24;
+		  }else if(pressed_button & (1<<2)){
+		     mode = EDIT_ATIME;
+		  }else if(pressed_button & (1<<3)){
+		     mode = EDIT_ALREN;
+		  }
+	       }else if( ~(pressed_button & (1<<7)) ){
+		  pressed_button &= 0b10100000;
+		  if(pressed_button & (1<<snooze_button)){
+		     mode = SNOOZE;
+		  }else{
+		     mode = NONE;
+		  }
+	       }
+	       break;
+
+	    case EDIT_STIME:
+	       if(pressed_button & (1<<7)){
+		  if (pressed_button & (1<<0)){
+		     mode = EDIT_STIME;
+		  }else if(pressed_button & (1<<1)){
+		     mode = EDIT_12_24;
+		  }else if(pressed_button & (1<<2)){
+		     mode = EDIT_ATIME;
+		  }else if(pressed_button & (1<<3)){
+		     mode = EDIT_ALREN;
+		  }
+	       }else if( ~(pressed_button & (1<<7)) ){
+		  pressed_button &= 0b10100000;
+		  if(pressed_button & (1<<snooze_button)){
+		     mode = SNOOZE;
+		  }else{
+		     mode = NONE;
+		  }
+	       }
+	       break;
+
+	    case EDIT_12_24:
+	       if(pressed_button & (1<<7)){
+		  if (pressed_button & (1<<0)){
+		     mode = EDIT_STIME;
+		  }else if(pressed_button & (1<<1)){
+		     mode = EDIT_12_24;
+		  }else if(pressed_button & (1<<2)){
+		     mode = EDIT_ATIME;
+		  }else if(pressed_button & (1<<3)){
+		     mode = EDIT_ALREN;
+		  }
+	       }else if( ~(pressed_button & (1<<7)) ){
+		  pressed_button &= 0b10100000;
+		  if(pressed_button & (1<<snooze_button)){
+		     mode = SNOOZE;
+		  }else{
+		     mode = NONE;
+		  }
+	       }
+	       break;
+
+	    case EDIT_ATIME:
+	       if(pressed_button & (1<<7)){
+		  if (pressed_button & (1<<0)){
+		     mode = EDIT_STIME;
+		  }else if(pressed_button & (1<<1)){
+		     mode = EDIT_12_24;
+		  }else if(pressed_button & (1<<2)){
+		     mode = EDIT_ATIME;
+		  }else if(pressed_button & (1<<3)){
+		     mode = EDIT_ALREN;
+		  }
+	       }else if( ~(pressed_button & (1<<7)) ){
+		  pressed_button &= 0b10100000;
+		  if(pressed_button & (1<<snooze_button)){
+		     mode = SNOOZE;
+		  }else{
+		     mode = NONE;
+		  }
+	       }
+	       break;
+
+	    case EDIT_ALREN:
+	       if(pressed_button & (1<<7)){
+		  if (pressed_button & (1<<0)){
+		     mode = EDIT_STIME;
+		  }else if(pressed_button & (1<<1)){
+		     mode = EDIT_12_24;
+		  }else if(pressed_button & (1<<2)){
+		     mode = EDIT_ATIME;
+		  }else if(pressed_button & (1<<3)){
+		     mode = EDIT_ALREN;
+		  }
+	       }else if( ~(pressed_button & (1<<7)) ){
+		  pressed_button &= 0b10100000;
+		  if(pressed_button & (1<<snooze_button)){
+		     mode = SNOOZE;
+		  }else{
+		     mode = NONE;
+		  }
+	       }
+	       break;
+
+	    case SNOOZE:
+	       if(pressed_button & (1<<7)){
+		  if (pressed_button & (1<<0)){
+		     mode = EDIT_STIME;
+		  }else if(pressed_button & (1<<1)){
+		     mode = EDIT_12_24;
+		  }else if(pressed_button & (1<<2)){
+		     mode = EDIT_ATIME;
+		  }else if(pressed_button & (1<<3)){
+		     mode = EDIT_ALREN;
+		  }
+	       }else if( ~(pressed_button & (1<<7)) ){
+		  pressed_button &= 0b10100000;
+		  if(pressed_button & (1<<snooze_button)){
+		     mode = SNOOZE;
+		  }else{
+		     mode = NONE;
+		  }
+	       }
+	       break;
+
+	    default:
+	       mode = NONE;
+	       break;
+
+	 }//End Here -- Switch(mode)
+	 break;//End Here -- 0xA;
 
       case 0xF:
-      //----------------------------------------------------------- SPI_SECTION 
-      //Send the value to read_encoder(num_enco, spdr_val);
-      //Store the returning value to decide if inc or dec
-      ret_enc = read_encoder(0, spdr_val);
-      //Inc/Dec the sum accordingly
-      if(ret_enc == ENCO_CW){ //CW adding the sum
-	 sum += inc_step;
-      }else if(ret_enc == ENCO_CCW){
-	 sum -= inc_step;
-      }
+	 //----------------------------------------------------------- SPI_SECTION 
+	 //Send the value to read_encoder(num_enco, spdr_val);
+	 //Store the returning value to decide if inc or dec
+	 ret_enc = read_encoder(0, spdr_val);
+	 //Inc/Dec the sum accordingly
+	 if(ret_enc == ENCO_CW){ //CW adding the sum
+	    sum += inc_step;
+	 }else if(ret_enc == ENCO_CCW){
+	    sum -= inc_step;
+	 }
 
-      ret_enc = read_encoder(1, spdr_val);
-      //Inc/Dec the sum accordingly
-      if(ret_enc == ENCO_CW){ //CW adding the sum
-	 sum += inc_step;
-      }else if(ret_enc == ENCO_CCW){
-	 sum -= inc_step;
-      }
-      break;
+	 ret_enc = read_encoder(1, spdr_val);
+	 //Inc/Dec the sum accordingly
+	 if(ret_enc == ENCO_CW){ //CW adding the sum
+	    sum += inc_step;
+	 }else if(ret_enc == ENCO_CCW){
+	    sum -= inc_step;
+	 }
+	 break;
 
    }
    ++tcnt2_cntr;
@@ -420,13 +525,10 @@ uint8_t main(){
    tcnt3_init();
    spi_init();
    mode = NONE;
-   snooze_button = rand()%7;
    sei();
-
    //PORTB=[ pwm | encd_sel2 | encd_sel1 | encd_sel0 | MISO | MOSI | SCK | SS ]
    //set port bits 4-7 B as outputs
 
-   //enum stages {NONE=0xFF, INC_1=0x01, INC_2=0x02, INC_4=0x04} mode;
    while(1){
 
       //------------------------------------------------ Display 7seg
@@ -446,8 +548,8 @@ uint8_t main(){
       //----------------------------------------------- SPI
       DDRB |= 0xF1;
       //Load the mode into SPDR
-      SPDR = pressed_button;
-      //      SPDR = mode;
+      SPDR = mode | (pressed_button & 0b10000000);
+//        SPDR = pressed_button;
 
       //Wait until you're done sending
       while(!(SPSR & (1<<SPIF)));
