@@ -42,7 +42,7 @@ uint8_t dec_to_7seg[19]={
    0x80,//8
    0x98,//9
    0xFF,//OFF (10)
-   0x7F};//Full Colon (11)
+   0xFC};//Full Colon (11)
 
 //For 7seg number string display
 uint16_t sum=0;
@@ -75,6 +75,21 @@ static struct time_info{
    uint16_t tick;
 } now;
 
+//A status byte containing all the toggling bits
+//status = [ 7seg_mode_disp | arm_alarm | sound_alarm | ...??? ]
+//         7                                                   0
+//     7seg_mode_disp - set mode of display for 7seg display
+//         0 - int string (w/o colon)
+//         1 - time format (w/ colon)
+//
+//     arm_alarm - whether the alarm has been armed or not
+//         0 - disarm
+//         1 - arm
+//
+//     sound_alarm - set if the alarm should be going off
+//         0 - mute
+//         1 - make noise
+uint8_t bare_status;
 
 ///////////////////////////////////////////////////////////////////////    ADC 
 /* Func: ADC_init()
@@ -146,6 +161,18 @@ void segsum(uint16_t val) {
    //Prevent ghosting
    PORTB = ((0x8<<4) & PORTB)|(5<<4); 
 }//segment_sum
+
+void disp_time(void){
+   segment_data[4] = now.min/10;
+   segment_data[3] = now.min%10 ;
+   segment_data[2] = 11;
+   segment_data[1] = now.sec/10;
+   segment_data[0] = now.sec%10;
+
+   //Prevent ghosting
+   PORTB = ((0x8<<4) & PORTB)|(5<<4); 
+}
+
 
 /***********************************************************************/
 //                            spi_init                               
@@ -295,10 +322,16 @@ ISR(TIMER0_OVF_vect){
    //------------------------------------------------------- Time Keeper (sec)
    ++now.tick;
    //TODO
-   if(now.tick == 4089){
+   if(now.tick == 489){
       ++now.sec;
       now.tick = 0;
    }
+/*
+   if(now.sec >= 60){
+      bare_flags |= (1<<0);
+      now.sec = 0;
+   }
+   */
 
    //----------------------------------------------------------- Music Timing
    static uint8_t ms = 0;
@@ -321,10 +354,12 @@ ISR(TIMER0_OVF_vect){
  *
  */
 ISR(TIMER1_COMPA_vect){
-   //Using PORTC Pin2 as an output
-   PORTC ^= (1<<PC2);
-   if(beat >= max_beat){
-      play_note('A'+(rand()%7),rand()%2,6+(rand()%3),rand()%16);
+   if(bare_status & 0b00100000){
+      //Using PORTC Pin2 as an output
+      PORTC ^= (1<<PC2);
+      if(beat >= max_beat){
+	 play_note('A'+(rand()%7),rand()%2,6+(rand()%3),rand()%16);
+      }
    }
 }
 
@@ -509,9 +544,9 @@ ISR(TIMER2_OVF_vect){
 
 	 //Check if a full minute
 	 if(now.sec == 60){
-	    now.sec = 0;
 	    ++now.min;
 	    ++sec_calibrate;
+	    now.sec = 0;
 	 }
 
 	 //Check if a full hour
@@ -583,6 +618,7 @@ uint8_t main(){
    tcnt3_init();
    spi_init();
    mode = NONE;
+   now.sec=55;
    sei();
    //PORTB=[ pwm | encd_sel2 | encd_sel1 | encd_sel0 | MISO | MOSI | SCK | SS ]
    //set port bits 4-7 B as outputs
@@ -591,7 +627,8 @@ uint8_t main(){
 
       //------------------------------------------------ Display 7seg
       //break up the disp_value to 4, BCD digits in the array: call (segsum)
-      segsum(sum);
+      //      segsum(sum);
+      disp_time();
       //make PORTA an output
       DDRA = 0xFF;
       //prevent ghosting
