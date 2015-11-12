@@ -42,7 +42,11 @@ uint8_t dec_to_7seg[19]={
    0x80,//8
    0x98,//9
    0xFF,//OFF (10)
-   0xFC};//Full Colon (11)
+   0xFC,//Full Colon (11)
+   0x40,//0. (12)
+   0x79,//1. (13)
+};
+
 
 //For 7seg number string display
 uint16_t sum=0;
@@ -89,6 +93,11 @@ static struct time_info{
 //     sound_alarm - set if the alarm should be going off
 //         0 - mute
 //         1 - make noise
+// 
+//     mil_time - Set if 12 or 24 hour mode will be displayed
+//         0 - 24 hr mode
+//         1 - 12 am/pm mode
+//
 uint8_t bare_status;
 
 ///////////////////////////////////////////////////////////////////////    ADC 
@@ -167,10 +176,29 @@ void segsum(uint16_t val) {
 void disp_time(void){
    //Colon enabled
    bare_status |= (1<<7);
-   segment_data[4] = now.hr/10;
-   segment_data[3] = now.hr%10 ;
-   segment_data[1] = now.min/10;
-   segment_data[0] = now.min%10;
+
+   if(bare_status & (1<<4)){ //AM-PM mode
+      if(now.hr > 12){
+	 segment_data[4] = ((now.hr-12)/10) + 12; //0. or 1.
+	 segment_data[3] = ((now.hr-12)%10);
+      }else if(now.hr == 0){
+	 segment_data[4] = 1;
+	 segment_data[3] = 2;
+      }else if(now.hr == 12){
+	 segment_data[4] = 13; //1.
+	 segment_data[3] = 2; 
+      }else{
+	 segment_data[4] = now.hr/10;
+	 segment_data[3] = now.hr%10;
+      }
+      segment_data[1] = now.min/10;
+      segment_data[0] = now.min%10;
+   }else{
+      segment_data[4] = now.hr/10;
+      segment_data[3] = now.hr%10 ;
+      segment_data[1] = now.min/10;
+      segment_data[0] = now.min%10;
+   }
 
    //Prevent ghosting
    PORTB = ((0x8<<4) & PORTB)|(5<<4); 
@@ -329,7 +357,7 @@ ISR(TIMER0_OVF_vect){
       ++now.sec;
       now.tick = 0;
       if(bare_status & (1<<7))
-      segment_data[2] = (segment_data[2] == 10) ? 11 : 10;
+	 segment_data[2] = (segment_data[2] == 10) ? 11 : 10;
    }
    /*
       if(now.sec >= 60){
@@ -375,7 +403,7 @@ ISR(TIMER1_COMPA_vect){
  *     tick 0x0: Check Button
  *     tick 0x1: State Machine 
  *     tick 0x2: Time Keeper (minutes, hours)
- *     tick 0x3: Mode Display control (Mealy Output)
+ *     tick 0x3: Mode Enforcer (Mealy Output)
  *     tick 0xF: SPI
  *
  */
@@ -384,6 +412,14 @@ ISR(TIMER2_OVF_vect){
    static uint8_t tcnt2_cntr = 0;
    //Calibrating for the crystal time off
    static uint8_t sec_calibrate = 0;
+   //Use toggler to check if the bit value has been change from the previos 
+   //interrupt (you want to change it only once) 
+   //toggler = [ EDIT_12_24 | ...?]
+   static uint8_t toggler;
+
+   if(!(pressed_button & (1<<7)))
+      toggler = 0x00;
+
    switch (tcnt2_cntr){
       case 0x0:
 	 //----------------------------------------------------- BUTTON_&_7-SEG
@@ -567,14 +603,45 @@ ISR(TIMER2_OVF_vect){
 	 break;
 
       case 0x3:
-	 //-----------------------------------------------------Display Manager
+	 //----------------------------------------------------- SM Enforcer
 	 //Enforcing no colon policy
 	 if( !(bare_status & (1<<7)) )
 	    segment_data[2] = 0xFF;
 	 switch(mode){
 	    case EDIT_STIME:
+	       //Send the value to read_encoder(num_enco, spdr_val);
+	       //Store the returning value to decide if inc or dec
+	       ret_enc = read_encoder(1, spdr_val);
+	       //Inc/Dec the sum accordingly
+	       if(ret_enc == ENCO_CW){ //CW adding the sum
+		  now.hr += 1;
+	       }else if(ret_enc == ENCO_CCW){
+		  now.hr -= 1;
+	       }
+
+	       ret_enc = read_encoder(0, spdr_val);
+	       //Inc/Dec the sum accordingly
+	       if(ret_enc == ENCO_CW){ //CW adding the sum
+		  now.min += 1;
+	       }else if(ret_enc == ENCO_CCW){
+		  if(now.min != 0)
+		     now.min -= 1;
+	       }
+
+	       if(now.hr >= 24){
+		  now.hr = 0;
+	       }
+	       if(now.min >= 60){
+		  now.min = 0;
+		  ++now.hr;
+	       }
 	       break;
+
 	    case EDIT_12_24:
+	       if(!(toggler & (1<<7))){
+		  bare_status ^= (1<<4);
+		  toggler |= (1<<7);
+	       }
 	       break;
 	    case EDIT_ATIME:
 	       break;
@@ -591,24 +658,6 @@ ISR(TIMER2_OVF_vect){
 	 break;
 
       case 0xF:
-	 //------------------------------------------------------ SPI_SECTION 
-	 //Send the value to read_encoder(num_enco, spdr_val);
-	 //Store the returning value to decide if inc or dec
-	 ret_enc = read_encoder(0, spdr_val);
-	 //Inc/Dec the sum accordingly
-	 if(ret_enc == ENCO_CW){ //CW adding the sum
-	    sum += inc_step;
-	 }else if(ret_enc == ENCO_CCW){
-	    sum -= inc_step;
-	 }
-
-	 ret_enc = read_encoder(1, spdr_val);
-	 //Inc/Dec the sum accordingly
-	 if(ret_enc == ENCO_CW){ //CW adding the sum
-	    sum += inc_step;
-	 }else if(ret_enc == ENCO_CCW){
-	    sum -= inc_step;
-	 }
 	 break;
 
    }
