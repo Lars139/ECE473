@@ -54,7 +54,7 @@ uint8_t dec_to_7seg[19]={
 
 
 //For 7seg number string display
-uint16_t sum=0;
+static uint16_t cur_vol=50;
 uint8_t  digit=0;
 uint8_t  inc_step = 1;
 
@@ -89,7 +89,7 @@ static struct time_info{
 } now, atime, ztime;
 
 //A status byte containing all the toggling bits
-//status = [ 7seg_mode_disp | arm_alarm | sound_alarm | ...??? ]
+//status = [ 7seg_mode_disp | arm_alarm | sound_alarm | mil_time | changing_vol | ...??? ]
 //         7                                                   0
 //     7seg_mode_disp - set mode of display for 7seg display
 //         0 - int string (w/o colon)
@@ -106,6 +106,10 @@ static struct time_info{
 //     mil_time - Set if 12 or 24 hour mode will be displayed
 //         0 - 24 hr mode
 //         1 - 12 am/pm mode
+//
+//     changing_vol - Set if the volume is changing
+//         0 - volumn is not changing
+//         1 - volume is changing
 //
 uint8_t bare_status;
 
@@ -156,27 +160,28 @@ void segsum(uint16_t val) {
    //determine how many digits there are 
    //Filling in backward
    uint8_t i;
-   for( i=0; (val/10) > 0 ; ++i){
-      if(i==2){
-	 segment_data[i] = 0xFF;
-	 ++i;
-      } 
-      segment_data[i] = val%10;
-      val /= 10;
-   }
-   if(val != 0){
-      segment_data[i] = val;
-      val = 0;
-      for(uint8_t j=i+1; j<5; ++j){
-	 segment_data[j] = 0xA;
-      }
-   }else{//In case val == 0
-      segment_data[4] = 0x0 ;
-      segment_data[3] = 0x0 ;
-      segment_data[1] = 0x0;
-      segment_data[0] = 0x0;
-   }
+   if( !(bare_status & (1<<7)) ){
+      segment_data[0] = val%10;
+      segment_data[1] = val/10%10;
+      segment_data[2] = 10; 
+      segment_data[3] = val/100%10;
+      segment_data[4] = val/1000%10;
 
+      //Turning leading 0 off
+      if(segment_data[4]==0){
+	 segment_data[4] = 10;
+
+	 if(segment_data[3]==0){
+	    segment_data[3] = 10;
+
+	    if(segment_data[1]==0){
+	       segment_data[1] = 10;
+	    }
+	 }
+      }
+
+
+   }
    //Prevent ghosting
    PORTB = ((0x8<<4) & PORTB)|(5<<4); 
 }//segment_sum
@@ -185,53 +190,55 @@ void segsum(uint16_t val) {
 void disp_time(void){
    //Colon enabled
    bare_status |= (1<<7);
-   if(mode != EDIT_ATIME){
-      if(bare_status & (1<<4)){ //AM-PM mode
-	 if(now.hr > 12){
-	    segment_data[4] = ((now.hr-12)/10) + 12; //0. or 1.
-	    segment_data[3] = ((now.hr-12)%10);
-	 }else if(now.hr == 0){
-	    segment_data[4] = 1;
-	    segment_data[3] = 2;
-	 }else if(now.hr == 12){
-	    segment_data[4] = 13; //1.
-	    segment_data[3] = 2; 
+   if(bare_status & (1<<7)){
+      if((mode != EDIT_ATIME)){
+	 if(bare_status & (1<<4)){ //AM-PM mode
+	    if(now.hr > 12){
+	       segment_data[4] = ((now.hr-12)/10) + 12; //0. or 1.
+	       segment_data[3] = ((now.hr-12)%10);
+	    }else if(now.hr == 0){
+	       segment_data[4] = 1;
+	       segment_data[3] = 2;
+	    }else if(now.hr == 12){
+	       segment_data[4] = 13; //1.
+	       segment_data[3] = 2; 
+	    }else{
+	       segment_data[4] = now.hr/10;
+	       segment_data[3] = now.hr%10;
+	    }
+	    segment_data[1] = now.min/10;
+	    segment_data[0] = now.min%10;
 	 }else{
 	    segment_data[4] = now.hr/10;
-	    segment_data[3] = now.hr%10;
+	    segment_data[3] = now.hr%10 ;
+	    segment_data[1] = now.min/10;
+	    segment_data[0] = now.min%10;
 	 }
-	 segment_data[1] = now.min/10;
-	 segment_data[0] = now.min%10;
       }else{
-	 segment_data[4] = now.hr/10;
-	 segment_data[3] = now.hr%10 ;
-	 segment_data[1] = now.min/10;
-	 segment_data[0] = now.min%10;
-      }
-   }else{
-      if(bare_status & (1<<4)){ //AM-PM mode
-	 if(atime.hr > 12){
-	    segment_data[4] = ((atime.hr-12)/10) + 12; //0. or 1.
-	    segment_data[3] = ((atime.hr-12)%10);
-	 }else if(atime.hr == 0){
-	    segment_data[4] = 1;
-	    segment_data[3] = 2;
-	 }else if(atime.hr == 12){
-	    segment_data[4] = 13; //1.
-	    segment_data[3] = 2; 
+	 if(bare_status & (1<<4)){ //AM-PM mode
+	    if(atime.hr > 12){
+	       segment_data[4] = ((atime.hr-12)/10) + 12; //0. or 1.
+	       segment_data[3] = ((atime.hr-12)%10);
+	    }else if(atime.hr == 0){
+	       segment_data[4] = 1;
+	       segment_data[3] = 2;
+	    }else if(atime.hr == 12){
+	       segment_data[4] = 13; //1.
+	       segment_data[3] = 2; 
+	    }else{
+	       segment_data[4] = atime.hr/10;
+	       segment_data[3] = atime.hr%10;
+	    }
+	    segment_data[1] = atime.min/10;
+	    segment_data[0] = atime.min%10;
 	 }else{
 	    segment_data[4] = atime.hr/10;
-	    segment_data[3] = atime.hr%10;
+	    segment_data[3] = atime.hr%10 ;
+	    segment_data[1] = atime.min/10;
+	    segment_data[0] = atime.min%10;
 	 }
-	 segment_data[1] = atime.min/10;
-	 segment_data[0] = atime.min%10;
-      }else{
-	 segment_data[4] = atime.hr/10;
-	 segment_data[3] = atime.hr%10 ;
-	 segment_data[1] = atime.min/10;
-	 segment_data[0] = atime.min%10;
-      }
 
+      }
    }
 
    //Prevent ghosting
@@ -315,7 +322,7 @@ void tcnt2_init(void){
  * Output: None
  */
 void tcnt3_init(void){
-   //PORTE Pin1 as an output for PWM waveform
+   //PORTE Pin3 as an output for PWM waveform
    DDRE  |= (1<<PE3);
 
    //Fast-PWM mode, no prescaling, ICR3 top, OCR3A comp (clear on match) 
@@ -323,8 +330,8 @@ void tcnt3_init(void){
    TCCR3B = (1<<WGM33 | 1<<WGM32 | 1<<CS30);
 
    //FIXME: NOT WORKING!
-   ICR3   = 0xFF;
-   OCR3A  = 0xFF; 
+   ICR3   = 0x64;
+   OCR3A  = 90; 
 }
 
 
@@ -423,12 +430,12 @@ ISR(TIMER0_OVF_vect){
  */
 ISR(TIMER1_COMPA_vect){
    //Should it be making sound? 
-   if(bare_status & (1<<5)){
+//   if(bare_status & (1<<5)){
       //Using PORTC Pin2 as an output
       PORTC ^= (1<<PC2);
       if(beat >= max_beat){
 	 play_note('A'+(rand()%7),rand()%2,6+(rand()%3),rand()%16);
-      }
+  //    }
    }
 }
 
@@ -620,6 +627,11 @@ ISR(TIMER2_OVF_vect){
 	    sec_calibrate = 0;
 	 }
 
+	 if(now.sec==15 | now.sec ==30 | now.sec==45 | now.sec==0){
+	    segment_data[2] = 11;
+	    bare_status &= ~(1<<3);
+	 }
+
 	 //Check if a full minute
 	 if(now.sec == 60){
 	    ++now.min;
@@ -643,22 +655,22 @@ ISR(TIMER2_OVF_vect){
 	 //----------------------------------------------------- SM Enforcer
 	 //Enforcing no colon policy
 	 if( !(bare_status & (1<<7)) )
-	    segment_data[2] = 0xFF;
+	    segment_data[2] = 0x10;
 	 switch(mode){
 	    case EDIT_STIME:
 	       //Send the value to read_encoder(num_enco, spdr_val);
 	       //Store the returning value to decide if inc or dec
 	       ret_enc = read_encoder(1, spdr_val);
-	       //Inc/Dec the sum accordingly
-	       if(ret_enc == ENCO_CW){ //CW adding the sum
+	       //Inc/Dec the hour accordingly
+	       if(ret_enc == ENCO_CW){ //CW adding the hour
 		  now.hr += 1;
 	       }else if(ret_enc == ENCO_CCW){
 		  now.hr -= 1;
 	       }
 
 	       ret_enc = read_encoder(0, spdr_val);
-	       //Inc/Dec the sum accordingly
-	       if(ret_enc == ENCO_CW){ //CW adding the sum
+	       //Inc/Dec the minute accordingly
+	       if(ret_enc == ENCO_CW){ //CW adding the minute
 		  now.min += 1;
 	       }else if(ret_enc == ENCO_CCW){
 		  if(now.min != 0)
@@ -711,7 +723,7 @@ ISR(TIMER2_OVF_vect){
 	       if(!(toggler & (1<<6))){//Has the bare_status been toggled?
 
 		  //Enable arm the alarm
-		  bare_status ^= (1<<6); 
+		  bare_status |= (1<<6); 
 		  toggler |= (1<<6);
 	       }
 	       break;
@@ -732,119 +744,138 @@ ISR(TIMER2_OVF_vect){
 
 	    case SNOOZE:
 	       if(!(toggler & (1<<5))){//Has the bare_status been toggled?
-	       //Turn off the noise
+		  //Turn off the noise
 		  bare_status ^= (1<<5); 
 		  toggler |= (1<<5);
 		  //Clear alarm bit so it can go off again
 		  toggler &= ~(1<<4);
 	       }
 
-		  //Set snooze time
-		  ztime.hr = now.hr;
-		  ztime.min = now.min + SNOOZE_GAP_M;
-		  ztime.sec = now.sec + SNOOZE_GAP_S;
+	       //Set snooze time
+	       ztime.hr = now.hr;
+	       ztime.min = now.min + SNOOZE_GAP_M;
+	       ztime.sec = now.sec + SNOOZE_GAP_S;
 
-		  if(ztime.sec >= 60){
-		     ztime.sec %= 60;
-		     ++ztime.min;
-		  }
+	       if(ztime.sec >= 60){
+		  ztime.sec %= 60;
+		  ++ztime.min;
+	       }
 
-		  if(ztime.min >= 60){
-		     ztime.min %= 60;
-		     ++ztime.hr;
-		  }
-		  break;
-
-		  case NONE:
-		  //TODO
-		  break;
+	       if(ztime.min >= 60){
+		  ztime.min %= 60;
+		  ++ztime.hr;
 	       }
 	       break;
 
-	    case 0x4:
-	       if(bare_status & (1<<6)){
-	       if(((now.hr == atime.hr)&&(now.min == atime.min)
-			&&(now.sec == atime.sec)) || ((now.hr == ztime.hr)&&
-			(now.min == ztime.min)&&(now.sec == ztime.sec)))
-		  if(!(toggler & (1<<4))){//Has the bare_status been toggled?
-		     //Set the alarm off
-		     bare_status |= (1<<5); 
-		     toggler |= (1<<4);
-		  }
+	    case NONE:
+	       //TODO: make the sound adjustment AND segsum-disp_time select
+	       ret_enc = read_encoder(0, spdr_val);
+	       //Inc/Dec the volume accordingly
+	       if(ret_enc == ENCO_CW){ //CW adding the minute
+		  cur_vol += 10;
+		  bare_status |= (1<<3);
+	       }else if(ret_enc == ENCO_CCW){
+		  bare_status |= (1<<3);
+		  if(cur_vol != 0)
+		     cur_vol -= 10;
 	       }
+	       OCR3A = cur_vol;
 	       break;
-
-	    case 0xF:
-	       break;
-
 	 }
-	 ++tcnt2_cntr;
-   }
+	 break;
 
-
-
-   ////////////////////////////////////////////////////////////////////////  MAIN
-   uint8_t main(){
-      ADC_init();
-      tcnt0_init();
-      tcnt1_init();
-      tcnt2_init();
-      tcnt3_init();
-      spi_init();
-
-      mode = NONE;
-      segment_data[2] = 10; 
-      sei();
-      //PORTB=[ pwm | encd_sel2 | encd_sel1 | encd_sel0 | MISO | MOSI | SCK | SS ]
-      //set port bits 4-7 B as outputs
-
-      while(1){
-
-	 //------------------------------------------------ Display 7seg
-	 //break up the disp_value to 4, BCD digits in the array: call (segsum)
-	 //      segsum(sum);
-	 disp_time();
-	 //make PORTA an output
-	 DDRA = 0xFF;
-	 //prevent ghosting
-	 PORTA = 0xFF;
-	 //send 7 segment code to LED segments
-	 PORTA = dec_to_7seg[segment_data[digit]];
-	 //send PORTB the digit to display
-	 PORTB = ((0x8<<4) & PORTB)|(digit<<4); 
-	 //update digit to display
-	 digit = (++digit)%5;
-
-	 //----------------------------------------------- SPI
-	 DDRB |= 0xF1;
-	 //Load the mode into SPDR
+      case 0x4:
 	 if(bare_status & (1<<6)){
-	    SPDR = (pressed_button & (1<<7)) | (0xFF & 1<<((run_led)%7)); 
+	    if(((now.hr == atime.hr)&&(now.min == atime.min)
+		     &&(now.sec == atime.sec)) || ((now.hr == ztime.hr)&&
+		     (now.min == ztime.min)&&(now.sec == ztime.sec)))
+	       if(!(toggler & (1<<4))){//Has the bare_status been toggled?
+		  //Set the alarm off
+		  bare_status |= (1<<5); 
+		  toggler |= (1<<4);
+	       }
 	 }else{
-	    SPDR = mode | (pressed_button & 0b10000000);
-	    //        SPDR = pressed_button;
+	    if(!(toggler & (1<<4))){//Has the bare_status been toggled?
+	       //Turn off alarm if alarm is not set
+	       bare_status &= ~(1<<5); 
+	       toggler |= (1<<4);
+	    }
 	 }
+	 break;
 
-	 //Wait until you're done sending
-	 while(!(SPSR & (1<<SPIF)));
-
-	 DDRD = 0x04;
-	 PORTD = 0x00;
-
-	 DDRE = 0x40;
-	 PORTE = 0x40;
-	 //Strobe the BarGraph
-	 PORTD |= (1<<PD2);
-	 PORTD &= ~(1<<PD2);
-
-	 PORTE = 0x00;
-	 PORTE = 0x40;
-	 //Wait for the SPDR to be filled
-	 while(!(SPSR & (1<<SPIF)));
-	 //Store the SPDR value
-	 spdr_val = SPDR;
+   }
+   ++tcnt2_cntr;
+}
 
 
-      }//while
-      return 0;
-   }//main
+
+////////////////////////////////////////////////////////////////////////  MAIN
+uint8_t main(){
+   ADC_init();
+   tcnt0_init();
+   tcnt1_init();
+   tcnt2_init();
+   tcnt3_init();
+   spi_init();
+
+   segment_data[2]=11;
+   mode = NONE;
+   sei();
+   //PORTB=[ pwm | encd_sel2 | encd_sel1 | encd_sel0 | MISO | MOSI | SCK | SS ]
+   //set port bits 4-7 B as outputs
+
+   while(1){
+
+      //------------------------------------------------ Display 7seg
+      //break up the disp_value to 4, BCD digits in the array: call (segsum)
+      if(bare_status & (1<<3) && mode==NONE)
+	 segsum(cur_vol);
+      else
+	 disp_time();
+      //make PORTA an output
+      DDRA = 0xFF;
+      //prevent ghosting
+      PORTA = 0xFF;
+
+      if(digit==2 && !(bare_status&(1<<7)))
+	 ++digit;
+      //send 7 segment code to LED segments
+      PORTA = dec_to_7seg[segment_data[digit]];
+      //send PORTB the digit to display
+      PORTB = ((0x8<<4) & PORTB)|(digit<<4); 
+      //update digit to display
+      digit = (++digit)%5;
+
+      //----------------------------------------------- SPI
+      DDRB |= 0xF1;
+      //Load the mode into SPDR
+      if(bare_status & (1<<6)){
+	 SPDR = (pressed_button & (1<<7)) | (0xFF & 1<<((run_led)%7)); 
+      }else{
+	 SPDR = mode | (pressed_button & 0b10000000);
+	 //        SPDR = pressed_button;
+      }
+
+      //Wait until you're done sending
+      while(!(SPSR & (1<<SPIF)));
+
+      DDRD = 0x04;
+      PORTD = 0x00;
+
+      DDRE = 0x48;
+      PORTE = 0x40;
+      //Strobe the BarGraph
+      PORTD |= (1<<PD2);
+      PORTD &= ~(1<<PD2);
+
+      PORTE = 0x00;
+      PORTE = 0x40;
+      //Wait for the SPDR to be filled
+      while(!(SPSR & (1<<SPIF)));
+      //Store the SPDR value
+      spdr_val = SPDR;
+
+
+   }//while
+   return 0;
+}//main
