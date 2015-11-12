@@ -21,6 +21,11 @@
 #define ENCO_CW 1
 #define ENCO_CCW 2
 
+//------------------Snooze period
+// *_S for second, *_M for minute
+#define SNOOZE_GAP_S 10
+#define SNOOZE_GAP_M 0
+
 /////////////////////////////////////////////////////////////////    GLOBAL VAR
 
 
@@ -73,12 +78,15 @@ uint8_t ret_enc = 0;    //return val from Encoder
 uint8_t spdr_val = 0;   //value in SPDR
 
 //For Timekeeping
+// now -- current displaying time
+// atime -- alarm time
+// ztime -- time of snooze
 static struct time_info{
    uint8_t hr;
    uint8_t min;
    uint8_t sec;
    uint16_t tick;
-} now, atime;
+} now, atime, ztime;
 
 //A status byte containing all the toggling bits
 //status = [ 7seg_mode_disp | arm_alarm | sound_alarm | ...??? ]
@@ -443,7 +451,7 @@ ISR(TIMER2_OVF_vect){
    static uint8_t sec_calibrate = 0;
    //Use toggler to check if the bit value has been change from the previos 
    //interrupt (you want to change it only once) 
-   //toggler = [ EDIT_12_24 | EDIT_ALREN | ...?]
+   //toggler = [ EDIT_12_24 | EDIT_ALREN | SNOOZE | sound_alarm ...?]
    static uint8_t toggler;
 
    if(!(pressed_button & (1<<7)))
@@ -700,96 +708,143 @@ ISR(TIMER2_OVF_vect){
 		  atime.min = 0;
 		  ++atime.hr;
 	       }
-	       break;
-
-	    case EDIT_ALREN:
 	       if(!(toggler & (1<<6))){//Has the bare_status been toggled?
-		  bare_status ^= (1<<6);
+
+		  //Enable arm the alarm
+		  bare_status ^= (1<<6); 
 		  toggler |= (1<<6);
 	       }
 	       break;
 
+	    case EDIT_ALREN:
+	       if(!(toggler & (1<<6))){//Has the bare_status been toggled?
+
+		  //Enable arm the alarm
+		  bare_status ^= (1<<6); 
+		  toggler |= (1<<6);
+
+		  if(!(bare_status & (1<<6))){
+		     //Turn off the alarm
+		     bare_status &= ~(1<<5);
+		  }
+	       }
+	       break;
+
 	    case SNOOZE:
+	       if(!(toggler & (1<<5))){//Has the bare_status been toggled?
+	       //Turn off the noise
+		  bare_status ^= (1<<5); 
+		  toggler |= (1<<5);
+		  //Clear alarm bit so it can go off again
+		  toggler &= ~(1<<4);
+	       }
+
+		  //Set snooze time
+		  ztime.hr = now.hr;
+		  ztime.min = now.min + SNOOZE_GAP_M;
+		  ztime.sec = now.sec + SNOOZE_GAP_S;
+
+		  if(ztime.sec >= 60){
+		     ztime.sec %= 60;
+		     ++ztime.min;
+		  }
+
+		  if(ztime.min >= 60){
+		     ztime.min %= 60;
+		     ++ztime.hr;
+		  }
+		  break;
+
+		  case NONE:
+		  //TODO
+		  break;
+	       }
 	       break;
-	    case NONE:
+
+	    case 0x4:
+	       if(bare_status & (1<<6)){
+	       if(((now.hr == atime.hr)&&(now.min == atime.min)
+			&&(now.sec == atime.sec)) || ((now.hr == ztime.hr)&&
+			(now.min == ztime.min)&&(now.sec == ztime.sec)))
+		  if(!(toggler & (1<<4))){//Has the bare_status been toggled?
+		     //Set the alarm off
+		     bare_status |= (1<<5); 
+		     toggler |= (1<<4);
+		  }
+	       }
 	       break;
+
+	    case 0xF:
+	       break;
+
+	 }
+	 ++tcnt2_cntr;
+   }
+
+
+
+   ////////////////////////////////////////////////////////////////////////  MAIN
+   uint8_t main(){
+      ADC_init();
+      tcnt0_init();
+      tcnt1_init();
+      tcnt2_init();
+      tcnt3_init();
+      spi_init();
+
+      mode = NONE;
+      segment_data[2] = 10; 
+      sei();
+      //PORTB=[ pwm | encd_sel2 | encd_sel1 | encd_sel0 | MISO | MOSI | SCK | SS ]
+      //set port bits 4-7 B as outputs
+
+      while(1){
+
+	 //------------------------------------------------ Display 7seg
+	 //break up the disp_value to 4, BCD digits in the array: call (segsum)
+	 //      segsum(sum);
+	 disp_time();
+	 //make PORTA an output
+	 DDRA = 0xFF;
+	 //prevent ghosting
+	 PORTA = 0xFF;
+	 //send 7 segment code to LED segments
+	 PORTA = dec_to_7seg[segment_data[digit]];
+	 //send PORTB the digit to display
+	 PORTB = ((0x8<<4) & PORTB)|(digit<<4); 
+	 //update digit to display
+	 digit = (++digit)%5;
+
+	 //----------------------------------------------- SPI
+	 DDRB |= 0xF1;
+	 //Load the mode into SPDR
+	 if(bare_status & (1<<6)){
+	    SPDR = (pressed_button & (1<<7)) | (0xFF & 1<<((run_led)%7)); 
+	 }else{
+	    SPDR = mode | (pressed_button & 0b10000000);
+	    //        SPDR = pressed_button;
 	 }
 
+	 //Wait until you're done sending
+	 while(!(SPSR & (1<<SPIF)));
+
+	 DDRD = 0x04;
+	 PORTD = 0x00;
+
+	 DDRE = 0x40;
+	 PORTE = 0x40;
+	 //Strobe the BarGraph
+	 PORTD |= (1<<PD2);
+	 PORTD &= ~(1<<PD2);
+
+	 PORTE = 0x00;
+	 PORTE = 0x40;
+	 //Wait for the SPDR to be filled
+	 while(!(SPSR & (1<<SPIF)));
+	 //Store the SPDR value
+	 spdr_val = SPDR;
 
 
-	 break;
-
-      case 0xF:
-	 break;
-
-   }
-   ++tcnt2_cntr;
-}
-
-
-
-////////////////////////////////////////////////////////////////////////  MAIN
-uint8_t main(){
-   ADC_init();
-   tcnt0_init();
-   tcnt1_init();
-   tcnt2_init();
-   tcnt3_init();
-   spi_init();
-
-   mode = NONE;
-   segment_data[2] = 10; 
-   sei();
-   //PORTB=[ pwm | encd_sel2 | encd_sel1 | encd_sel0 | MISO | MOSI | SCK | SS ]
-   //set port bits 4-7 B as outputs
-
-   while(1){
-
-      //------------------------------------------------ Display 7seg
-      //break up the disp_value to 4, BCD digits in the array: call (segsum)
-      //      segsum(sum);
-      disp_time();
-      //make PORTA an output
-      DDRA = 0xFF;
-      //prevent ghosting
-      PORTA = 0xFF;
-      //send 7 segment code to LED segments
-      PORTA = dec_to_7seg[segment_data[digit]];
-      //send PORTB the digit to display
-      PORTB = ((0x8<<4) & PORTB)|(digit<<4); 
-      //update digit to display
-      digit = (++digit)%5;
-
-      //----------------------------------------------- SPI
-      DDRB |= 0xF1;
-      //Load the mode into SPDR
-      if(bare_status & (1<<6)){
-	 SPDR = (pressed_button & (1<<7)) | (0xFF & 1<<((run_led)%7)); 
-      }else{
-	 SPDR = mode | (pressed_button & 0b10000000);
-	 //        SPDR = pressed_button;
-      }
-
-      //Wait until you're done sending
-      while(!(SPSR & (1<<SPIF)));
-
-      DDRD = 0x04;
-      PORTD = 0x00;
-
-      DDRE = 0x40;
-      PORTE = 0x40;
-      //Strobe the BarGraph
-      PORTD |= (1<<PD2);
-      PORTD &= ~(1<<PD2);
-
-      PORTE = 0x00;
-      PORTE = 0x40;
-      //Wait for the SPDR to be filled
-      while(!(SPSR & (1<<SPIF)));
-      //Store the SPDR value
-      spdr_val = SPDR;
-
-
-   }//while
-   return 0;
-}//main
+      }//while
+      return 0;
+   }//main
