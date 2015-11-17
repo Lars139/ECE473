@@ -27,6 +27,18 @@
 #define SNOOZE_GAP_S 10
 #define SNOOZE_GAP_M 0
 
+//------------------Bare_Status 
+#define COLON_DISP 7
+#define ARM_ALARM 6
+#define SOUND_ALARM 5
+#define MIL_TIME 4
+#define CHANGING_VOL 3
+
+//------------------LCD String display control
+#define LCD_STR_LENGTH 14
+#define LCD_STR "Bear was here!"
+
+
 /////////////////////////////////////////////////////////////////    GLOBAL VAR
 
 
@@ -89,10 +101,11 @@ static struct time_info{
    uint16_t tick;
 } now, atime, ztime;
 
+
 //A status byte containing all the toggling bits
 //status = [ 7seg_mode_disp | arm_alarm | sound_alarm | mil_time | changing_vol | ...??? ]
 //         7                                                   0
-//     7seg_mode_disp - set mode of display for 7seg display
+//     colon_disp - set mode of display for 7seg display
 //         0 - int string (w/o colon)
 //         1 - time format (w/ colon)
 //
@@ -157,11 +170,11 @@ uint8_t chk_buttons(uint8_t button) {
 //array is loaded at exit as:  |digit3|digit2|colon|digit1|digit0|
 void segsum(uint16_t val) {
    //Let's not use colon here
-   bare_status &= ~(1<<7);
+   bare_status &= ~(1<<COLON_DISP);
    //determine how many digits there are 
    //Filling in backward
    uint8_t i;
-   if( !(bare_status & (1<<7)) ){
+   if( !(bare_status & (1<<COLON_DISP)) ){
       segment_data[0] = val%10;
       segment_data[1] = val/10%10;
       segment_data[2] = 10; 
@@ -190,10 +203,10 @@ void segsum(uint16_t val) {
 //Displaying time
 void disp_time(void){
    //Colon enabled
-   bare_status |= (1<<7);
-   if(bare_status & (1<<7)){
+   bare_status |= (1<<COLON_DISP);
+   if(bare_status & (1<<COLON_DISP)){
       if((mode != EDIT_ATIME)){
-	 if(bare_status & (1<<4)){ //AM-PM mode
+	 if(bare_status & (1<<MIL_TIME)){ //AM-PM mode
 	    if(now.hr > 12){
 	       segment_data[4] = ((now.hr-12)/10) + 12; //0. or 1.
 	       segment_data[3] = ((now.hr-12)%10);
@@ -216,7 +229,7 @@ void disp_time(void){
 	    segment_data[0] = now.min%10;
 	 }
       }else{
-	 if(bare_status & (1<<4)){ //AM-PM mode
+	 if(bare_status & (1<<MIL_TIME)){ //AM-PM mode
 	    if(atime.hr > 12){
 	       segment_data[4] = ((atime.hr-12)/10) + 12; //0. or 1.
 	       segment_data[3] = ((atime.hr-12)%10);
@@ -330,7 +343,6 @@ void tcnt3_init(void){
    TCCR3A = (1<<COM3A1 | 1<<COM3A0 | 1<<WGM31);
    TCCR3B = (1<<WGM33 | 1<<WGM32 | 1<<CS30);
 
-   //FIXME: NOT WORKING!
    ICR3   = 0x64;
    OCR3A  = 90; 
 }
@@ -367,11 +379,9 @@ uint8_t read_encoder(uint8_t enco_num, uint8_t spdr_val){
    if( cur_enco == 0b11 ){
       if( (enco_trend[enco_num]>1) && (enco_trend[enco_num]<100) ){
 	 out = ENCO_CW;
-	 //first_run_zero = 0;
       }
       if( (enco_trend[enco_num]<=0xFF) && (enco_trend[enco_num]>0x90) ){
 	 out = ENCO_CCW;
-	 //first_run_zero = 0;
       }
       enco_trend[enco_num] = 0;
    }
@@ -400,7 +410,7 @@ ISR(TIMER0_OVF_vect){
       ++run_led;
       ++now.sec;
       now.tick = 0;
-      if(bare_status & (1<<7))
+      if(bare_status & (1<<COLON_DISP))
 	 segment_data[2] = (segment_data[2] == 10) ? 11 : 10;
    }
    /*
@@ -431,7 +441,7 @@ ISR(TIMER0_OVF_vect){
  */
 ISR(TIMER1_COMPA_vect){
    //Should it be making sound? 
-   if(bare_status & (1<<5)){
+   if(bare_status & (1<<SOUND_ALARM)){
       //Using PORTC Pin2 as an output
       PORTC ^= (1<<PC2);
       if(beat >= max_beat){
@@ -448,7 +458,8 @@ ISR(TIMER1_COMPA_vect){
  *     tick 0x1: State Machine 
  *     tick 0x2: Time Keeper (minutes, hours)
  *     tick 0x3: Mode Enforcer (Mealy Output)
- *     tick 0x4: Check Alarm! //TODO
+ *     tick 0x4: Check Alarm! 
+ *     tick 0x5: LCD display control
  *     tick 0xF: SPI
  *
  */
@@ -461,9 +472,12 @@ ISR(TIMER2_OVF_vect){
    //interrupt (you want to change it only once) 
    //toggler = [ EDIT_12_24 | EDIT_ALREN | SNOOZE | sound_alarm ...?]
    static uint8_t toggler;
+   //lcd control section for itck 0x5;
+   static uint8_t lcd_string[LCD_STR_LENGTH] = LCD_STR;
+   static uint8_t lcd_cursor=0;
 
    static uint8_t lcd_idx;
-   char LCD_string[16] ="ALARMALARMALARMALARMA"; 
+//   char LCD_string[16] ="ALARMALARMALARMALARMA"; 
 
    if(!(pressed_button & (1<<7)))
       toggler = 0x00;
@@ -631,9 +645,9 @@ ISR(TIMER2_OVF_vect){
 	    sec_calibrate = 0;
 	 }
 
-	 if(now.sec==15 | now.sec ==30 | now.sec==45 | now.sec==0){
+	 if(now.sec==15 || now.sec ==30 || now.sec==45 || now.sec==0){
 	    segment_data[2] = 11;
-	    bare_status &= ~(1<<3);
+	    bare_status &= ~(1<<CHANGING_VOL);
 	 }
 
 	 //Check if a full minute
@@ -658,7 +672,7 @@ ISR(TIMER2_OVF_vect){
       case 0x3:
 	 //----------------------------------------------------- SM Enforcer
 	 //Enforcing no colon policy
-	 if( !(bare_status & (1<<7)) )
+	 if( !(bare_status & (1<<COLON_DISP)) )
 	    segment_data[2] = 0x10;
 	 switch(mode){
 	    case EDIT_STIME:
@@ -692,7 +706,7 @@ ISR(TIMER2_OVF_vect){
 
 	    case EDIT_12_24:
 	       if(!(toggler & (1<<7))){
-		  bare_status ^= (1<<4);
+		  bare_status ^= (1<<MIL_TIME);
 		  toggler |= (1<<7);
 	       }
 	       break;
@@ -727,7 +741,7 @@ ISR(TIMER2_OVF_vect){
 	       if(!(toggler & (1<<6))){//Has the bare_status been toggled?
 
 		  //Enable arm the alarm
-		  bare_status |= (1<<6); 
+		  bare_status |= (1<<ARM_ALARM); 
 		  toggler |= (1<<6);
 	       }
 	       break;
@@ -736,12 +750,12 @@ ISR(TIMER2_OVF_vect){
 	       if(!(toggler & (1<<6))){//Has the bare_status been toggled?
 
 		  //Enable arm the alarm
-		  bare_status ^= (1<<6); 
+		  bare_status ^= (1<<ARM_ALARM); 
 		  toggler |= (1<<6);
 
-		  if(!(bare_status & (1<<6))){
+		  if(!(bare_status & (1<<ARM_ALARM))){
 		     //Turn off the alarm
-		     bare_status &= ~(1<<5);
+		     bare_status &= ~(1<<SOUND_ALARM);
 		  }
 	       }
 	       break;
@@ -749,7 +763,7 @@ ISR(TIMER2_OVF_vect){
 	    case SNOOZE:
 	       if(!(toggler & (1<<5))){//Has the bare_status been toggled?
 		  //Turn off the noise
-		  bare_status ^= (1<<5); 
+		  bare_status ^= (1<<SOUND_ALARM); 
 		  toggler |= (1<<5);
    LCD_Clr();
 		  //Clear alarm bit so it can go off again
@@ -773,122 +787,140 @@ ISR(TIMER2_OVF_vect){
 	       break;
 
 	    case NONE:
-	       //TODO: make the sound adjustment AND segsum-disp_time select
+	       // make the sound adjustment AND segsum-disp_time select
 	       ret_enc = read_encoder(0, spdr_val);
 	       //Inc/Dec the volume accordingly
 	       if(ret_enc == ENCO_CW){ //CW adding the minute
 		  cur_vol += 10;
-		  bare_status |= (1<<3);
+		  bare_status |= (1<<CHANGING_VOL);
 	       }else if(ret_enc == ENCO_CCW){
-		  bare_status |= (1<<3);
+		  bare_status |= (1<<CHANGING_VOL);
 		  if(cur_vol != 0)
 		     cur_vol -= 10;
 	       }
-	       OCR3A = cur_vol;
+	       OCR3A = 100 - cur_vol;
 	       break;
 	 }
 	 break;
 
       case 0x4:
-	 if(bare_status & (1<<6)){
+	 //------------------------------------------------- Setting Alarm Off 
+	 if(bare_status & (1<<ARM_ALARM)){
 	    if(((now.hr == atime.hr)&&(now.min == atime.min)
 		     &&(now.sec == atime.sec)) || ((now.hr == ztime.hr)&&
 		     (now.min == ztime.min)&&(now.sec == ztime.sec)))
 	       if(!(toggler & (1<<4))){//Has the bare_status been toggled?
 		  
 		  //Set the alarm off
-		  //TODO: Fix this
-		  //TODO: set the limit for the volumn
-		  bare_status |= (1<<5); 
-		  LCD_Clr();
-		  LCD_PutStr("ALARMALARMALARMALARM");
+		  //TODO: Make the timing for the volume display
+		  bare_status |= (1<<SOUND_ALARM); 
+		  //		  LCD_PutStr("ALARMALARMALARMALARM");
 		  toggler |= (1<<4);
 	       }
+	
 
 	 }else{
 	    if(!(toggler & (1<<4))){//Has the bare_status been toggled?
 	       //Turn off alarm if alarm is not set
-	       bare_status &= ~(1<<5); 
+	       bare_status &= ~(1<<SOUND_ALARM); 
 	       LCD_Clr();
 	       toggler |= (1<<4);
 	    }
 	 }
 	 break;
 
+      case 0x5:
+	 //------------------------------------------------ LCD Display Control
+	 //FIXME:HERE!
+	 //if(bare_status & (1<<SOUND_ALARM)){
+	 if(bare_status & (1<<ARM_ALARM)){
+	    LCD_PutChar(lcd_string[lcd_cursor]);
+	    if(lcd_cursor == (LCD_STR_LENGTH-1))
+	    lcd_cursor=0;
+	    else
+	    ++lcd_cursor;
+	 }else{
+	    //FIXME: The Alarm goes off, LCD displays fine.
+	    //But once the alarm is muted and LCD is off, the 7seg really gets
+	    //freaky
+	    LCD_Clr();
+	 }
+	 break;
+
    }
    ++tcnt2_cntr;
-}
+   }
 
 
 
-////////////////////////////////////////////////////////////////////////  MAIN
-uint8_t main(){
-   ADC_init();
-   tcnt0_init();
-   tcnt1_init();
-   tcnt2_init();
-   tcnt3_init();
-   spi_init();
-   LCD_Init();
+   ////////////////////////////////////////////////////////////////////////  MAIN
+   uint8_t main(){
+      ADC_init();
+      tcnt0_init();
+      tcnt1_init();
+      tcnt2_init();
+      tcnt3_init();
+      spi_init();
+      LCD_Init();
 
-   segment_data[2]=11;
-   mode = NONE;
-   sei();
-   //PORTB=[ pwm | encd_sel2 | encd_sel1 | encd_sel0 | MISO | MOSI | SCK | SS ]
-   //set port bits 4-7 B as outputs
+      segment_data[2]=11;
+      mode = NONE;
+      sei();
+      //PORTB=[ pwm | encd_sel2 | encd_sel1 | encd_sel0 | MISO | MOSI | SCK | SS ]
+      //set port bits 4-7 B as outputs
 
-   while(1){
+      while(1){
 
-      //------------------------------------------------ Display 7seg
-      //break up the disp_value to 4, BCD digits in the array: call (segsum)
-      if(bare_status & (1<<3) && mode==NONE)
-	 segsum(cur_vol);
-      else
-	 disp_time();
-      //make PORTA an output
-      DDRA = 0xFF;
-      //prevent ghosting
-      PORTA = 0xFF;
+	 //------------------------------------------------ Display 7seg
+	 //break up the disp_value to 4, BCD digits in the array: call (segsum)
+	 if(bare_status & (1<<CHANGING_VOL) && mode==NONE)
+	    segsum(cur_vol);
+	 else
+	    disp_time();
+	 //make PORTA an output
+	 DDRA = 0xFF;
+	 //prevent ghosting
+	 PORTA = 0xFF;
 
-      if(digit==2 && !(bare_status&(1<<7)))
-	 ++digit;
-      //send 7 segment code to LED segments
-      PORTA = dec_to_7seg[segment_data[digit]];
-      //send PORTB the digit to display
-      PORTB = ((0x8<<4) & PORTB)|(digit<<4); 
-      //update digit to display
-      digit = (++digit)%5;
+	 if(digit==2 && !(bare_status&(1<<COLON_DISP)))
+	    ++digit;
+	 //send 7 segment code to LED segments
+	 PORTA = dec_to_7seg[segment_data[digit]];
+	 //send PORTB the digit to display
+	 PORTB = ((0x8<<4) & PORTB)|(digit<<4); 
+	 //update digit to display
+	 digit = (++digit)%5;
 
-      //----------------------------------------------- SPI
-      DDRB |= 0xF1;
-      //Load the mode into SPDR
-      if(bare_status & (1<<6)){
-	 SPDR = (pressed_button & (1<<7)) | (0xFF & 1<<((run_led)%7)); 
-      }else{
-	 SPDR = mode | (pressed_button & 0b10000000);
-	 //        SPDR = pressed_button;
-      }
+	 //----------------------------------------------- SPI
+	 DDRB |= 0xF1;
+	 //Load the mode into SPDR
+	 if(bare_status & (1<<ARM_ALARM)){
+	    SPDR = (pressed_button & (1<<7)) | (0xFF & 1<<((run_led)%7)); 
+	 }else{
+	    SPDR = mode | (pressed_button & 0b10000000);
+	    //        SPDR = pressed_button;
+	 }
 
-      //Wait until you're done sending
-      while(!(SPSR & (1<<SPIF)));
+	 //Wait until you're done sending
+	 while(!(SPSR & (1<<SPIF)));
 
-      DDRD = 0x04;
-      PORTD = 0x00;
+	 DDRD = 0x04;
+	 PORTD = 0x00;
 
-      DDRE = 0x48;
-      PORTE = 0x40;
-      //Strobe the BarGraph
-      PORTD |= (1<<PD2);
-      PORTD &= ~(1<<PD2);
+	 DDRE = 0x48;
+	 PORTE = 0x40;
+	 //Strobe the BarGraph
+	 PORTD |= (1<<PD2);
+	 PORTD &= ~(1<<PD2);
 
-      PORTE = 0x00;
-      PORTE = 0x40;
-      //Wait for the SPDR to be filled
-      while(!(SPSR & (1<<SPIF)));
-      //Store the SPDR value
-      spdr_val = SPDR;
+	 PORTE = 0x00;
+	 PORTE = 0x40;
+	 //Wait for the SPDR to be filled
+	 while(!(SPSR & (1<<SPIF)));
+	 //Store the SPDR value
+	 spdr_val = SPDR;
 
 
-   }//while
-   return 0;
-}//main
+      }//while
+      return 0;
+   }//main
