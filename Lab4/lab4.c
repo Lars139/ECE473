@@ -8,7 +8,7 @@
 //  PORTB bits 4-6 go to a,b,c inputs of the 74HC138.
 //  PORTB bit 7 goes to the PWM transistor base.
 
-#define F_CPU 16000000 // cpu speed in hertz 
+//#define F_CPU 16000000 // cpu speed in hertz 
 #define TRUE 1
 #define FALSE 0
 #include <avr/io.h>
@@ -92,14 +92,14 @@ uint8_t spdr_val = 0;   //value in SPDR
 
 //For Timekeeping
 // now -- current displaying time
-// atime -- alarm time
-// ztime -- time of snooze
+// alarm_time -- alarm time
+// snooze_time -- time of snooze
 static struct time_info{
-   uint8_t hr;
-   uint8_t min;
-   uint8_t sec;
+   uint8_t  hr;
+   uint8_t  min;
+   uint8_t  sec;
    uint16_t tick;
-} now, atime, ztime;
+} now, alarm_time, snooze_time, vol_disp_time;
 
 
 //A status byte containing all the toggling bits
@@ -138,7 +138,7 @@ void ADC_init(void){
    //Active high 
    PORTF = 0x00;
 
-   //Using external commong GND, Left-Aligned. 
+   //Using external common GND, Left-Aligned. 
    ADMUX = (1<<REFS0 | 1<<ADLAR);
 
    //Enable ADC, Start Conversion, Free Running Mode, Interrupt, /128 prescale.
@@ -196,8 +196,9 @@ void segsum(uint16_t val) {
 
 
    }
+   //FIXED: this dosent belong here
    //Prevent ghosting
-   PORTB = ((0x8<<4) & PORTB)|(5<<4); 
+   //PORTB = ((0x8<<4) & PORTB)|(5<<4); 
 }//segment_sum
 
 //Displaying time
@@ -230,33 +231,33 @@ void disp_time(void){
 	 }
       }else{
 	 if(bare_status & (1<<MIL_TIME)){ //AM-PM mode
-	    if(atime.hr > 12){
-	       segment_data[4] = ((atime.hr-12)/10) + 12; //0. or 1.
-	       segment_data[3] = ((atime.hr-12)%10);
-	    }else if(atime.hr == 0){
+	    if(alarm_time.hr > 12){
+	       segment_data[4] = ((alarm_time.hr-12)/10) + 12; //0. or 1.
+	       segment_data[3] = ((alarm_time.hr-12)%10);
+	    }else if(alarm_time.hr == 0){
 	       segment_data[4] = 1;
 	       segment_data[3] = 2;
-	    }else if(atime.hr == 12){
+	    }else if(alarm_time.hr == 12){
 	       segment_data[4] = 13; //1.
 	       segment_data[3] = 2; 
 	    }else{
-	       segment_data[4] = atime.hr/10;
-	       segment_data[3] = atime.hr%10;
+	       segment_data[4] = alarm_time.hr/10;
+	       segment_data[3] = alarm_time.hr%10;
 	    }
-	    segment_data[1] = atime.min/10;
-	    segment_data[0] = atime.min%10;
+	    segment_data[1] = alarm_time.min/10;
+	    segment_data[0] = alarm_time.min%10;
 	 }else{
-	    segment_data[4] = atime.hr/10;
-	    segment_data[3] = atime.hr%10 ;
-	    segment_data[1] = atime.min/10;
-	    segment_data[0] = atime.min%10;
+	    segment_data[4] = alarm_time.hr/10;
+	    segment_data[3] = alarm_time.hr%10 ;
+	    segment_data[1] = alarm_time.min/10;
+	    segment_data[0] = alarm_time.min%10;
 	 }
 
       }
    }
-
+   //FIXME: what the heck is this!!
    //Prevent ghosting
-   PORTB = ((0x8<<4) & PORTB)|(5<<4); 
+   //PORTB = ((0x8<<4) & PORTB)|(5<<4); 
 }
 
 
@@ -287,6 +288,8 @@ void tcnt0_init(void){
 }
 
 
+////////////////////////////////////////////////////////////////////////   
+/***********************************************************************/
 /* Func: tcnt1_init()
  * Desc: Initilize timer/counter1 (TCNT1) as a alarm_tone generator.
  * 	 Compare A, CTC Mode, /1024 pre-scaling
@@ -304,6 +307,8 @@ void tcnt1_init(void){
 }
 
 
+////////////////////////////////////////////////////////////////////////   
+/***********************************************************************/
 /* Func: tcnt2_init()
  * Desc: Initilize timer/counter2 (TCNT2) as a light dimmer (PWM) 
  * 	 PWM Mode, No pre-scaling
@@ -329,6 +334,8 @@ void tcnt2_init(void){
 }
 
 
+////////////////////////////////////////////////////////////////////////  
+/***********************************************************************/
 /* Func: tcnt3_init()
  * Desc: Initilize timer/counter3 (TCNT3) as a audio volume controller. 
  * 	 PWM Mode, No pre-scaling
@@ -439,6 +446,7 @@ ISR(TIMER0_OVF_vect){
  * Date 10 Nov 2015
  *
  */
+//TODO: time this ISR!
 ISR(TIMER1_COMPA_vect){
    //Should it be making sound? 
    if(bare_status & (1<<SOUND_ALARM)){
@@ -470,7 +478,7 @@ ISR(TIMER2_OVF_vect){
    static uint8_t sec_calibrate = 0;
    //Use toggler to check if the bit value has been change from the previos 
    //interrupt (you want to change it only once) 
-   //toggler = [ EDIT_12_24 | EDIT_ALREN | SNOOZE | sound_alarm ...?]
+   //toggler = [ EDIT_12_24 | EDIT_ALREN | SNOOZE | sound_alarm | change_vol ...?]
    static uint8_t toggler;
    //lcd control section for itck 0x5;
    static uint8_t lcd_string[LCD_STR_LENGTH] = LCD_STR;
@@ -486,8 +494,9 @@ ISR(TIMER2_OVF_vect){
       case 0x0:
 	 //----------------------------------------------------- BUTTON_&_7-SEG
 	 //make PORTA an input port with pullups 
-	 DDRA = 0x00;
+	 //FIXED: reverse these two following statemnts
 	 PORTA = 0xFF;
+	 DDRA = 0x00;
 	 //enable tristate buffer for pushbutton switches
 	 PORTB = 0x70;
 	 //now check each button and increment the count as needed
@@ -645,10 +654,12 @@ ISR(TIMER2_OVF_vect){
 	    sec_calibrate = 0;
 	 }
 
-	 if(now.sec==15 || now.sec ==30 || now.sec==45 || now.sec==0){
+	 //TODO: Timeing for volumn changing
+	 /*if(now.sec==15 || now.sec ==30 || now.sec==45 || now.sec==0){
 	    segment_data[2] = 11;
 	    bare_status &= ~(1<<CHANGING_VOL);
 	 }
+	 */
 
 	 //Check if a full minute
 	 if(now.sec == 60){
@@ -717,26 +728,26 @@ ISR(TIMER2_OVF_vect){
 	       ret_enc = read_encoder(1, spdr_val);
 	       //Inc/Dec the sum accordingly
 	       if(ret_enc == ENCO_CW){ //CW adding the sum
-		  atime.hr += 1;
+		  alarm_time.hr += 1;
 	       }else if(ret_enc == ENCO_CCW){
-		  atime.hr -= 1;
+		  alarm_time.hr -= 1;
 	       }
 
 	       ret_enc = read_encoder(0, spdr_val);
 	       //Inc/Dec the sum accordingly
 	       if(ret_enc == ENCO_CW){ //CW adding the sum
-		  atime.min += 1;
+		  alarm_time.min += 1;
 	       }else if(ret_enc == ENCO_CCW){
-		  if(atime.min != 0)
-		     atime.min -= 1;
+		  if(alarm_time.min != 0)
+		     alarm_time.min -= 1;
 	       }
 
-	       if(atime.hr >= 24){
-		  atime.hr = 0;
+	       if(alarm_time.hr >= 24){
+		  alarm_time.hr = 0;
 	       }
-	       if(atime.min >= 60){
-		  atime.min = 0;
-		  ++atime.hr;
+	       if(alarm_time.min >= 60){
+		  alarm_time.min = 0;
+		  ++alarm_time.hr;
 	       }
 	       if(!(toggler & (1<<6))){//Has the bare_status been toggled?
 
@@ -771,18 +782,18 @@ ISR(TIMER2_OVF_vect){
 	       }
 
 	       //Set snooze time
-	       ztime.hr = now.hr;
-	       ztime.min = now.min + SNOOZE_GAP_M;
-	       ztime.sec = now.sec + SNOOZE_GAP_S;
+	       snooze_time.hr = now.hr;
+	       snooze_time.min = now.min + SNOOZE_GAP_M;
+	       snooze_time.sec = now.sec + SNOOZE_GAP_S;
 
-	       if(ztime.sec >= 60){
-		  ztime.sec %= 60;
-		  ++ztime.min;
+	       if(snooze_time.sec >= 60){
+		  snooze_time.sec %= 60;
+		  ++snooze_time.min;
 	       }
 
-	       if(ztime.min >= 60){
-		  ztime.min %= 60;
-		  ++ztime.hr;
+	       if(snooze_time.min >= 60){
+		  snooze_time.min %= 60;
+		  ++snooze_time.hr;
 	       }
 	       break;
 
@@ -791,13 +802,46 @@ ISR(TIMER2_OVF_vect){
 	       ret_enc = read_encoder(0, spdr_val);
 	       //Inc/Dec the volume accordingly
 	       if(ret_enc == ENCO_CW){ //CW adding the minute
-		  cur_vol += 10;
+		  if(cur_vol < 100)
+		     cur_vol += 10;
 		  bare_status |= (1<<CHANGING_VOL);
+		  vol_disp_time.hr = now.hr;
+		  vol_disp_time.min= now.min;
+		  vol_disp_time.sec = now.sec + 3;
 	       }else if(ret_enc == ENCO_CCW){
 		  bare_status |= (1<<CHANGING_VOL);
 		  if(cur_vol != 0)
 		     cur_vol -= 10;
+		  vol_disp_time.hr = now.hr;
+		  vol_disp_time.min= now.min;
+		  vol_disp_time.sec = now.sec + 3;
 	       }
+
+	       //Wrap around
+	       if(vol_disp_time.sec >=60 ){
+		  ++vol_disp_time.min;
+		  vol_disp_time.sec %= 60;
+	       }
+	       if(vol_disp_time.min>=60 ){
+		  ++vol_disp_time.hr;
+		  vol_disp_time.min %= 60;
+	       }
+	       if(vol_disp_time.hr>=24 ){
+		  vol_disp_time.hr %= 24;
+	       }
+
+
+	       if( (now.hr == vol_disp_time.hr)&&(now.min == vol_disp_time.min)
+		     &&(now.sec == vol_disp_time.sec) ){
+		  if(!(toggler & (1<<3))){
+
+		     //Back to time display mode 
+		     bare_status &= ~(1<<CHANGING_VOL); 
+		     segment_data[2]=11;
+		     toggler |= (1<<3);
+		  }
+	       }//End Here -- check now == vol_disp_time
+
 	       OCR3A = 100 - cur_vol;
 	       break;
 	 }
@@ -806,18 +850,16 @@ ISR(TIMER2_OVF_vect){
       case 0x4:
 	 //------------------------------------------------- Setting Alarm Off 
 	 if(bare_status & (1<<ARM_ALARM)){
-	    if(((now.hr == atime.hr)&&(now.min == atime.min)
-		     &&(now.sec == atime.sec)) || ((now.hr == ztime.hr)&&
-		     (now.min == ztime.min)&&(now.sec == ztime.sec)))
+	    if(((now.hr == alarm_time.hr)&&(now.min == alarm_time.min)
+		     &&(now.sec == alarm_time.sec)) || ((now.hr == snooze_time.hr)&&
+		     (now.min == snooze_time.min)&&(now.sec == snooze_time.sec)))
 	       if(!(toggler & (1<<4))){//Has the bare_status been toggled?
-		  
+
 		  //Set the alarm off
-		  //TODO: Make the timing for the volume display
 		  bare_status |= (1<<SOUND_ALARM); 
-		  //		  LCD_PutStr("ALARMALARMALARMALARM");
 		  toggler |= (1<<4);
 	       }
-	
+
 
 	 }else{
 	    if(!(toggler & (1<<4))){//Has the bare_status been toggled?
@@ -831,14 +873,13 @@ ISR(TIMER2_OVF_vect){
 
       case 0x5:
 	 //------------------------------------------------ LCD Display Control
-	 //FIXME:HERE!
 	 //if(bare_status & (1<<SOUND_ALARM)){
 	 if(bare_status & (1<<ARM_ALARM)){
 	    LCD_PutChar(lcd_string[lcd_cursor]);
 	    if(lcd_cursor == (LCD_STR_LENGTH-1))
-	    lcd_cursor=0;
+	       lcd_cursor=0;
 	    else
-	    ++lcd_cursor;
+	       ++lcd_cursor;
 	 }else{
 	    //FIXME: The Alarm goes off, LCD displays fine.
 	    //But once the alarm is muted and LCD is off, the 7seg really gets
@@ -863,9 +904,22 @@ ISR(TIMER2_OVF_vect){
       spi_init();
       LCD_Init();
 
+      //Set a Colon display
       segment_data[2]=11;
+      //Set an initial state machine
       mode = NONE;
+
+      //PortE Pin6 for Encoder strobe
+      //PORTE Pin6 as an output for Encoder Strobe
+      DDRE  |= (1<<PE6);
+      PORTE = 0xFF;
+
+      //PORTD Pin as an output for the BarGraph
+      DDRD |= (1<<PD2);	 
+
+      //Enable interrupt
       sei();
+
       //PORTB=[ pwm | encd_sel2 | encd_sel1 | encd_sel0 | MISO | MOSI | SCK | SS ]
       //set port bits 4-7 B as outputs
 
@@ -877,6 +931,7 @@ ISR(TIMER2_OVF_vect){
 	    segsum(cur_vol);
 	 else
 	    disp_time();
+	 //FIXED: think about this below; 
 	 //make PORTA an output
 	 DDRA = 0xFF;
 	 //prevent ghosting
@@ -900,21 +955,21 @@ ISR(TIMER2_OVF_vect){
 	    SPDR = mode | (pressed_button & 0b10000000);
 	    //        SPDR = pressed_button;
 	 }
-
+	 //Prevent ghosting for 7seg
+	 PORTB = ((0x8<<4) & PORTB)|(5<<4); 
 	 //Wait until you're done sending
 	 while(!(SPSR & (1<<SPIF)));
 
-	 DDRD = 0x04;
-	 PORTD = 0x00;
-
-	 DDRE = 0x48;
-	 PORTE = 0x40;
-	 //Strobe the BarGraph
+	 //FIXME:Accidental bug??   
+	 //Strobe BarGraph
 	 PORTD |= (1<<PD2);
 	 PORTD &= ~(1<<PD2);
 
-	 PORTE = 0x00;
-	 PORTE = 0x40;
+	 //FIXED: looks like a bug: strobe encoder?
+	 //Strobe Encoder 
+	 PORTE &= ~(1<<PD6);
+	 PORTE |= (1<<PD6);
+
 	 //Wait for the SPDR to be filled
 	 while(!(SPSR & (1<<SPIF)));
 	 //Store the SPDR value
