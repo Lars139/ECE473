@@ -198,7 +198,7 @@ void segsum(uint16_t val) {
    }
    //FIXED: this dosent belong here
    //Prevent ghosting
-   //PORTB = ((0x8<<4) & PORTB)|(5<<4); 
+   PORTB = ((0x8<<4) & PORTB)|(5<<4); 
 }//segment_sum
 
 //Displaying time
@@ -255,9 +255,9 @@ void disp_time(void){
 
       }
    }
-   //FIXME: what the heck is this!!
+   //FIXED: what the heck is this!!
    //Prevent ghosting
-   //PORTB = ((0x8<<4) & PORTB)|(5<<4); 
+   PORTB = ((0x8<<4) & PORTB)|(5<<4); 
 }
 
 
@@ -776,7 +776,7 @@ ISR(TIMER2_OVF_vect){
 		  //Turn off the noise
 		  bare_status ^= (1<<SOUND_ALARM); 
 		  toggler |= (1<<5);
-   LCD_Clr();
+		  LCD_Clr();
 		  //Clear alarm bit so it can go off again
 		  toggler &= ~(1<<4);
 	       }
@@ -881,11 +881,8 @@ ISR(TIMER2_OVF_vect){
 	    else
 	       ++lcd_cursor;
 	 }else{
-	    //FIXME: The Alarm goes off, LCD displays fine.
-	    //But once the alarm is muted and LCD is off, the 7seg really gets
-	    //freaky
-	    LCD_Clr();
-	 }
+	    //Intentionally left blank
+	    	 }
 	 break;
 
    }
@@ -956,11 +953,11 @@ ISR(TIMER2_OVF_vect){
 	    //        SPDR = pressed_button;
 	 }
 	 //Prevent ghosting for 7seg
-	 PORTB = ((0x8<<4) & PORTB)|(5<<4); 
+	 //PORTB = ((0x8<<4) & PORTB)|(5<<4); 
 	 //Wait until you're done sending
 	 while(!(SPSR & (1<<SPIF)));
 
-	 //FIXME:Accidental bug??   
+	 //FIXED:Accidental bug??   
 	 //Strobe BarGraph
 	 PORTD |= (1<<PD2);
 	 PORTD &= ~(1<<PD2);
