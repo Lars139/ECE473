@@ -1,56 +1,28 @@
-/* UART Example for Teensy USB Development Board
- * http://www.pjrc.com/teensy/
- * Copyright (c) 2009 PJRC.COM, LLC
- * 
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- * 
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- * 
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- */
-
-// Version 1.0: Initial Release
-// Version 1.1: Add support for Teensy 2.0, minor optimizations
-
-
 #include <avr/io.h>
 
-#include "usart.h"
-
-void USART_init(unsigned int baud)
+void USART0_init(uint16_t baud)
 {
 	// Set baud rate
-	UBRR1 = baud;
+	UBRR0H = baud>>8;
+	UBRR0L = baud;
 	
 	// Enable transmit and receive
-	UCSR1B = (1 << RXEN1) | (1 << TXEN1) | (1<<RXCIE1);
+	UCSR0B = (1 << RXEN0) | (1 << TXEN0) | (1<<RXCIE0);
 	
 	// Set frame format: 8 data bits, 1 stop bit
-	UCSR1C = (1 << UCSZ11) | (1 << UCSZ10);
+	UCSR0C = (1 << UCSZ01) | (1 << UCSZ00);
 }
 
 void USART_transmit(unsigned char data)
 {
-	while (!(UCSR1A & (1 << UDRE1)));
+	while (!(UCSR0A & (1 << UDRE0)));
 	
-	UDR1 = data;
+	UDR0 = data;
 }
 
 unsigned char USART_available()
 {
-	return (UCSR1A & (1 << RXC1));
+	return (UCSR0A & (1 << RXC0));
 }
 
 unsigned char USART_receive()

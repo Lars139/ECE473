@@ -16,7 +16,8 @@
 #include <util/delay.h>
 #include "music.c"
 #include "LCDDriver.h"
-#include "usart.h"
+//#include "lcd_functions.h"
+#include "usart.c"
 
 //-------------------Encoder control
 #define NUM_OF_ENCO 2
@@ -34,6 +35,7 @@
 #define SOUND_ALARM 5
 #define MIL_TIME 4
 #define CHANGING_VOL 3
+#define CLR_LCD_DISP 2
 
 //------------------LCD String display control
 #define LCD_STR_LENGTH 14
@@ -104,7 +106,7 @@ static struct time_info{
 
 
 //A status byte containing all the toggling bits
-//status = [ 7seg_mode_disp | arm_alarm | sound_alarm | mil_time | changing_vol | ...??? ]
+//status = [ 7seg_mode_disp | arm_alarm | sound_alarm | mil_time | changing_vol | LCD_Clr ...??? ]
 //         7                                                   0
 //     colon_disp - set mode of display for 7seg display
 //         0 - int string (w/o colon)
@@ -125,6 +127,10 @@ static struct time_info{
 //     changing_vol - Set if the volume is changing
 //         0 - volumn is not changing
 //         1 - volume is changing
+//
+//     LCD_Clr - clear the LCD display
+//         0 - not clear yet
+//         1 - LCD is all clear
 //
 uint8_t bare_status;
 
@@ -287,7 +293,6 @@ void tcnt0_init(void){
 }
 
 
-////////////////////////////////////////////////////////////////////////   
 /***********************************************************************/
 /* Func: tcnt1_init()
  * Desc: Initilize timer/counter1 (TCNT1) as a alarm_tone generator.
@@ -306,7 +311,6 @@ void tcnt1_init(void){
 }
 
 
-////////////////////////////////////////////////////////////////////////   
 /***********************************************************************/
 /* Func: tcnt2_init()
  * Desc: Initilize timer/counter2 (TCNT2) as a light dimmer (PWM) 
@@ -333,7 +337,6 @@ void tcnt2_init(void){
 }
 
 
-////////////////////////////////////////////////////////////////////////  
 /***********************************************************************/
 /* Func: tcnt3_init()
  * Desc: Initilize timer/counter3 (TCNT3) as a audio volume controller. 
@@ -479,12 +482,6 @@ ISR(TIMER2_OVF_vect){
    //interrupt (you want to change it only once) 
    //toggler = [ EDIT_12_24 | EDIT_ALREN | SNOOZE | sound_alarm | change_vol ...?]
    static uint8_t toggler;
-   //lcd control section for itck 0x5;
-   static uint8_t lcd_string[LCD_STR_LENGTH] = LCD_STR;
-   static uint8_t lcd_cursor=0;
-
-   static uint8_t lcd_idx;
-//   char LCD_string[16] ="ALARMALARMALARMALARMA"; 
 
    if(!(pressed_button & (1<<7)))
       toggler = 0x00;
@@ -767,7 +764,6 @@ ISR(TIMER2_OVF_vect){
 		  //Turn off the noise
 		  bare_status ^= (1<<SOUND_ALARM); 
 		  toggler |= (1<<5);
-		  LCD_Clr();
 		  //Clear alarm bit so it can go off again
 		  toggler &= ~(1<<4);
 	       }
@@ -856,24 +852,9 @@ ISR(TIMER2_OVF_vect){
 	    if(!(toggler & (1<<4))){//Has the bare_status been toggled?
 	       //Turn off alarm if alarm is not set
 	       bare_status &= ~(1<<SOUND_ALARM); 
-	       LCD_Clr();
 	       toggler |= (1<<4);
 	    }
 	 }
-	 break;
-
-      case 0x5:
-	 //------------------------------------------------ LCD Display Control
-	 //if(bare_status & (1<<SOUND_ALARM)){
-	 if(bare_status & (1<<ARM_ALARM)){
-	    LCD_PutChar(lcd_string[lcd_cursor]);
-	    if(lcd_cursor == (LCD_STR_LENGTH-1))
-	       lcd_cursor=0;
-	    else
-	       ++lcd_cursor;
-	 }else{
-	    //Intentionally left blank
-	    	 }
 	 break;
 
    }
@@ -891,7 +872,8 @@ ISR(TIMER2_OVF_vect){
       tcnt3_init();
       spi_init();
       LCD_Init();
-      USART_init(51);
+      //lcd_init();
+      USART0_init(51);
 
       //Set a Colon display
       segment_data[2]=11;
@@ -961,7 +943,28 @@ ISR(TIMER2_OVF_vect){
 	 //Store the SPDR value
 	 spdr_val = SPDR;
 
+	 //------------------------------------------------ LCD Display Control
+	 //lcd control section for itck 0x5;
+	 static uint8_t lcd_string[LCD_STR_LENGTH] = LCD_STR;
+	 static uint8_t lcd_cursor=0;
+	 static uint8_t lcd_idx;
+	 //if(bare_status & (1<<SOUND_ALARM)){
+	 if(bare_status & (1<<ARM_ALARM)){
+	    bare_status |= 1<<CLR_LCD_DISP;
+	    LCD_PutChar(lcd_string[lcd_cursor]);
+	    if(lcd_cursor == (LCD_STR_LENGTH-1)){
+	       lcd_cursor=0;
+	       LCD_MovCursor(1,0);
+	    }else{
+	       ++lcd_cursor;
+	    }
+	 }else{
+	    if(bare_status & (1<<CLR_LCD_DISP)){
+	       LCD_Clr();
+	       bare_status &= ~(1<<CLR_LCD_DISP);
+	    }
+	 }
 
       }//while
       return 0;
-   }//main
+      }//main
