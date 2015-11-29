@@ -7,14 +7,17 @@
 //Display is the raw binary output from the LM73.
 //PD0 is SCL, PD1 is SDA. 
 
+//#define MEGA48_DEBUG 1
+#define MEGA48 1
+
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include <util/delay.h>
 #include <string.h>
 #include <stdlib.h>
-#include "lcd_functions.h"
 #include "lm73_functions_skel.h"
 #include "twi_master.h"
+#include "usart.h"
 
 char    lcd_string_array[16];  //holds a string to refresh the LCD
 uint8_t i;                     //general purpose index
@@ -43,35 +46,63 @@ void spi_init(void){
 /***********************************************************************/
 int main ()
 {     
-   uint16_t lm73_temp;  //a place to assemble the temperature from the lm73
+   //a place to assemble the temperature from the lm73
+   uint16_t lm73_temp;  
+   //USART read buffer
+   unsigned char usart_rd_buf;
 
    spi_init();   //initalize SPI 
-   lcd_init();   //initalize LCD (lcd_functions.h)
    init_twi();   //initalize TWI (twi_master.h)  
+   USART0_init(51);
 
-//   lm73_set_max_resolution();
+   //   lm73_set_max_resolution();
    lm73_set_ptr_to_read();
 
    sei();             //enable interrupts to allow start_wr to finish
 
-   clear_display();   //clean up the display
-
    while(1){          //main while loop
+
+      //-------------------------------------------------- USART_REC
+#ifndef MEGA48_DEBUG
+      usart_rd_buf = USART_receive();
+#endif
+
+      //------------------------------------------------------ TWI
+#ifdef MEGA48_DEBUG  
       _delay_ms(100);  //tenth second wait
-      clear_display(); //wipe the display
+#endif
       twi_start_rd(LM73_ADDRESS, lm73_rd_buf, 2); //read temperature data from LM73 (2 bytes)  (twi_start_rd())
       _delay_ms(2);    //wait for it to finish
       //now assemble the two bytes read back into one 16-bit value
       lm73_temp = lm73_rd_buf[0]; //save high temperature byte into lm73_temp
       lm73_temp <<= 8; //shift it into upper byte 
       lm73_temp |= lm73_rd_buf[1]; //"OR" in the low temp byte to lm73_temp 
-      //convert to string in array with itoa() from avr-libc                
+
+      //Determining if Celcius or Fahrenheit	
+      if(usart_rd_buf == 'F')
+	 lm73_temp = ((lm73_temp*9)+160)/5;
+
+      //convert to string in array with itoa() from avr-libc
       itoa(lm73_temp, lcd_string_array, 10); 
+
       /*Do this on MEGA128 side
-      lcd_string_array[4] = lcd_string_array[3];
-      lcd_string_array[3] = lcd_string_array[2];
-      lcd_string_array[2] = '.';
+	lcd_string_array[4] = lcd_string_array[3];
+	lcd_string_array[3] = lcd_string_array[2];
+	lcd_string_array[2] = '.';
 	*/ 
-      string2lcd(lcd_string_array); //send the string to LCD (lcd_functions)
+
+      //-------------------------------------------------- USART_TRANS
+      //Transmit the string byte by byte to MEGA128
+#ifndef MEGA48_DEBUG
+      for(int i=0; i<5; ++i){
+	 USART_transmit(lcd_string_array[i]);
+      }
+#endif
+
+#ifdef MEGA48_DEBUG  
+      //send the string to LCD (lcd_functions)
+      string2lcd(lcd_string_array); 
+#endif
+
    } //while
 } //main
