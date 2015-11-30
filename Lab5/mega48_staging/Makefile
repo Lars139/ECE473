@@ -16,7 +16,8 @@ OPTIMIZE       = -O2    # options are 1, 2, 3, s
 #OPTIMIZE       = -Os    # options are 1, 2, 3, s
 #OPTIMIZE       = -1s    # options are 1, 2, 3, s
 
-F_CPU          = 16000000UL
+#F_CPU          = 16000000UL
+F_CPU          = 8000000UL
 
 DEFS           =
 LIBS           =
@@ -52,7 +53,7 @@ all_clean:
 #hacked the permissions for stinkin' Redhat box
 program: $(PRG).hex
 	chmod 644 $(PRG).hex
-	sudo /home/bob/Desktop/ECE473/avrdude/avrdude/avrdude -C /home/bob/Desktop/ECE473/avrdude/avrdude/avrdude.conf -P usb -c osuisp2 -p m128 -e -U flash:w:$(PRG).hex -v
+	sudo /home/bob/Desktop/ECE473/avrdude/avrdude/avrdude -C /home/bob/Desktop/ECE473/avrdude/avrdude/avrdude.conf -P usb -c osuisp2 -p m48 -e -U flash:w:$(PRG).hex -U lfuse:w:0xE2:m   -v
 
 #avrdude -p $(PROGRAMMER_TARGET) -c usbasp -e -U flash:w:$(PRG).hex 
 #	avrdude -p $(PROGRAMMER_TARGET) -c osuisp2 -e -U flash:w:$(PRG).hex 
