@@ -98,12 +98,13 @@ uint8_t pressed_button = 0x00;
 uint8_t ret_enc = 0;    //return val from Encoder
 uint8_t spdr_val = 0;   //value in SPDR
 
-//For TWI communication with temperature sensor
+//For TWI communication with local (mega128) temperature sensor
 uint8_t lm73_rd_buf[2]; 
 uint8_t lm73_wr_buf[2]; 
 
 //Temperature value
 char mega128_temp_str[9];
+char mega48_temp_str[9];
 
 //For Timekeeping
 // now -- current displaying time
@@ -440,6 +441,7 @@ void mega128_temperature(){
    //"OR" in the low temp byte to mega128_temp
    mega128_temp |= lm73_rd_buf[1];
    //Convert the unit if needed
+   //FIXME
    if(bare_status & (1<<FAHRENHEIT)){
       mega128_temp = ((mega128_temp*9)+160)/5;
       temp_unit = 'F';
@@ -447,13 +449,46 @@ void mega128_temperature(){
 
    //Formatting the output
    if(mega128_temp & (1<<0xF))//Check signed bit
-   snprintf(mega128_temp_str,9, "-%d.%-2d %c",mega128_temp>>7, ((mega128_temp & (0x3<<5))*25)>>5, temp_unit);
+      snprintf(mega128_temp_str,9, "-%d.%-2d %c",mega128_temp>>7, ((mega128_temp & (0x3<<5))*25)>>5, temp_unit);
    else
-   snprintf(mega128_temp_str,9, " %d.%-2d %c",mega128_temp>>7, ((mega128_temp & (0x3<<5))*25)>>5, temp_unit);
+      snprintf(mega128_temp_str,9, " %d.%-2d %c",mega128_temp>>7, ((mega128_temp & (0x3<<5))*25)>>5, temp_unit);
 
 }
 
 
+/***********************************************************************/
+/* Func: mega48_temperature(void)
+ * Desc: Do USART communication with mega48 to get  remote temperature
+ * Output temperature string is stored in mega48_temp_str w/ size of 9 
+ */
+void mega48_temperature(){
+
+   //For USART communication with remote (meag48) temperature sensor
+   unsigned char mega48_temp; 
+   char temp_unit = 'C';
+   if(bare_status & (1<<FAHRENHEIT))
+      USART_transmit('F');
+   else
+      USART_transmit('C');
+
+   //save high temperature byte into mega128_temp
+   mega48_temp = USART_receive(); 
+   mega48_temp <<= 8;
+   //"OR" in the low temp byte to mega48_temp
+   mega48_temp |= USART_receive();
+   //FIXME
+   //Convert the unit if needed
+   if(bare_status & (1<<FAHRENHEIT)){
+      mega48_temp = ((mega48_temp*9)+160)/5;
+      temp_unit = 'F';
+   }
+
+   //Formatting the output
+   if(mega48_temp & (1<<0xF))//Check signed bit
+      snprintf(mega48_temp_str,9, "-%2d.%-2d %c",mega48_temp>>7, ((mega48_temp & (0x3<<5))*25)>>5, temp_unit);
+   else
+      snprintf(mega48_temp_str,9, " %2d.%-2d %c",mega48_temp<<7, ((mega48_temp & (0x3<<5))*25)>>5, temp_unit);
+}
 
 
 ///////////////////////////////////////////////////////////  ISR_SECTION
@@ -931,7 +966,7 @@ uint8_t main(){
    init_twi();
    LCD_Init();
    //lcd_init();
-   USART0_init(51);
+   USART0_init(103);
 
    //Set TWI pointer to the temperature output
    lm73_set_ptr_to_read();
@@ -1004,23 +1039,25 @@ uint8_t main(){
       //Store the SPDR value
       spdr_val = SPDR;
 
-      //------------------------------------------------ TWI Control
-     if(bare_status & (1<<TEMP_LCD_DISP)){ 
-      mega128_temperature();
-      bare_status &= ~(1<<TEMP_LCD_DISP);
-     }
-      
-      //----------------------------------------------- USART
-      //FIXME: To finish up
-      USART_transmit(1010);
+      //Once in so very often (1 sec) 
+      if(bare_status & (1<<TEMP_LCD_DISP)){ 
+	 //------------------------------------------------ TWI Control
+	 mega128_temperature();
+
+	 //----------------------------------------------- USART
+	 mega48_temperature();
+
+	 bare_status &= ~(1<<TEMP_LCD_DISP);
+      }
 
       //------------------------------------------------ LCD Display Control
       //lcd control section for itck 0x5;
       static uint8_t lcd_string[LCD_STR_LENGTH] = LCD_STR;
       static uint8_t lcd_cursor=0;
       static uint8_t lcd_idx;
+      static uint8_t lcd_line = 0;
       //TODO
-      //if(bare_status & (1<<SOUND_ALARM)){
+      //if(bare_status & (1<<SOUND_ALARM))
       if(bare_status & (1<<ARM_ALARM)){
 	 bare_status |= 1<<CLR_LCD_DISP;
 	 LCD_PutChar(lcd_string[lcd_cursor]);
@@ -1031,19 +1068,34 @@ uint8_t main(){
 	    ++lcd_cursor;
 	 }
       }else{
-      //FIXME: Have temperature display here w/o interfering w/ the other 
-      /*
-	 if(bare_status & (1<<CLR_LCD_DISP)){
+
+
+	 //FIXME: Have temperature display here w/o interfering w/ the other 
+	 /*
+	    if(bare_status & (1<<CLR_LCD_DISP)){
 	    LCD_Clr();
 	    bare_status &= ~(1<<CLR_LCD_DISP);
-	 }
-	 */
-	 LCD_PutChar(mega128_temp_str[lcd_cursor]);
-	 if(lcd_cursor == 7){
-	    lcd_cursor=0;
-	    LCD_MovCursor(1,0);
+	    }
+	    */
+	 if(lcd_line == 0){
+	    LCD_PutChar(mega128_temp_str[lcd_cursor]);
+	    if(lcd_cursor == 7){
+	       lcd_cursor=0;
+	       LCD_MovCursor(2,0);
+	       ++lcd_line;
+	    }else{
+	       ++lcd_cursor;
+	    }
 	 }else{
-	    ++lcd_cursor;
+	    LCD_PutChar(mega48_temp_str[lcd_cursor]);
+	    if(lcd_cursor == 7){
+	       lcd_cursor=0;
+	       LCD_MovCursor(1,0);
+	       --lcd_line;
+	    }else{
+	       ++lcd_cursor;
+	    }
+
 	 }
 
       }
@@ -1051,7 +1103,6 @@ uint8_t main(){
 
 
 
-
    }//while
    return 0;
-   }//main
+}//main

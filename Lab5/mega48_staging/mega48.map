@@ -1,17 +1,11 @@
 Archive member included because of file (symbol)
 
-/usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_udivmodhi4.o)
-                              mega48.o (__udivmodhi4)
 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_exit.o)
                               /usr/lib/gcc/avr/4.5.0/../../../../avr/lib/avr4/crtm48.o (exit)
 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_copy_data.o)
                               mega48.o (__do_copy_data)
 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_clear_bss.o)
                               mega48.o (__do_clear_bss)
-/usr/lib/gcc/avr/4.5.0/../../../../avr/lib/avr4/libc.a(itoa.o)
-                              mega48.o (itoa)
-/usr/lib/gcc/avr/4.5.0/../../../../avr/lib/avr4/libc.a(strrev.o)
-                              /usr/lib/gcc/avr/4.5.0/../../../../avr/lib/avr4/libc.a(itoa.o) (strrev)
 
 Allocating common symbols
 Common symbol       size              file
@@ -135,7 +129,7 @@ LOAD /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a
 .rela.plt
  *(.rela.plt)
 
-.text           0x00000000      0x43e
+.text           0x00000000      0x37c
  *(.vectors)
  .vectors       0x00000000       0x34 /usr/lib/gcc/avr/4.5.0/../../../../avr/lib/avr4/crtm48.o
                 0x00000000                __vectors
@@ -218,49 +212,38 @@ LOAD /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a
                 0x0000010c                __vector_16
                 0x0000010c                __vector_18
                 0x0000010c                __vector_20
- .text          0x0000010e       0xb4 mega48.o
+ .text          0x0000010e       0x78 mega48.o
                 0x0000010e                spi_init
                 0x0000011e                main
- .text          0x000001c2       0x2c lm73_functions_skel.o
-                0x000001c2                lm73_set_max_resolution
-                0x000001da                lm73_set_ptr_to_read
-                0x000001ea                lm73_temp_convert
- .text          0x000001ee      0x16e twi_master.o
-                0x000001ee                __vector_24
-                0x000002fe                twi_busy
-                0x00000306                twi_start_wr
-                0x00000328                twi_start_rd
-                0x0000034a                init_twi
- .text          0x0000035c       0x58 usart.o
-                0x0000035c                USART0_init
-                0x00000372                USART_transmit
-                0x00000380                USART_available
-                0x00000388                USART_receive
-                0x00000396                USART_send_string
- .text          0x000003b4        0x0 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_udivmodhi4.o)
- .text          0x000003b4        0x0 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_exit.o)
- .text          0x000003b4        0x0 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_copy_data.o)
- .text          0x000003b4        0x0 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_clear_bss.o)
- .text          0x000003b4        0x0 /usr/lib/gcc/avr/4.5.0/../../../../avr/lib/avr4/libc.a(itoa.o)
- .text          0x000003b4        0x0 /usr/lib/gcc/avr/4.5.0/../../../../avr/lib/avr4/libc.a(strrev.o)
-                0x000003b4                . = ALIGN (0x2)
+ .text          0x00000186       0x2c lm73_functions_skel.o
+                0x00000186                lm73_set_max_resolution
+                0x0000019e                lm73_set_ptr_to_read
+                0x000001ae                lm73_temp_convert
+ .text          0x000001b2      0x16e twi_master.o
+                0x000001b2                __vector_24
+                0x000002c2                twi_busy
+                0x000002ca                twi_start_wr
+                0x000002ec                twi_start_rd
+                0x0000030e                init_twi
+ .text          0x00000320       0x58 usart.o
+                0x00000320                USART0_init
+                0x00000336                USART_transmit
+                0x00000344                USART_available
+                0x0000034c                USART_receive
+                0x0000035a                USART_send_string
+ .text          0x00000378        0x0 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_exit.o)
+ .text          0x00000378        0x0 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_copy_data.o)
+ .text          0x00000378        0x0 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_clear_bss.o)
+                0x00000378                . = ALIGN (0x2)
  *(.text.*)
- .text.libgcc   0x000003b4       0x28 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_udivmodhi4.o)
-                0x000003b4                __udivmodhi4
- .text.libgcc   0x000003dc        0x0 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_exit.o)
- .text.libgcc   0x000003dc        0x0 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_copy_data.o)
- .text.libgcc   0x000003dc        0x0 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_clear_bss.o)
- .text.avr-libc
-                0x000003dc       0x3e /usr/lib/gcc/avr/4.5.0/../../../../avr/lib/avr4/libc.a(itoa.o)
-                0x000003dc                itoa
- .text.avr-libc
-                0x0000041a       0x20 /usr/lib/gcc/avr/4.5.0/../../../../avr/lib/avr4/libc.a(strrev.o)
-                0x0000041a                strrev
-                0x0000043a                . = ALIGN (0x2)
+ .text.libgcc   0x00000378        0x0 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_exit.o)
+ .text.libgcc   0x00000378        0x0 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_copy_data.o)
+ .text.libgcc   0x00000378        0x0 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_clear_bss.o)
+                0x00000378                . = ALIGN (0x2)
  *(.fini9)
- .fini9         0x0000043a        0x0 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_exit.o)
-                0x0000043a                exit
-                0x0000043a                _exit
+ .fini9         0x00000378        0x0 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_exit.o)
+                0x00000378                exit
+                0x00000378                _exit
  *(.fini9)
  *(.fini8)
  *(.fini8)
@@ -279,11 +262,11 @@ LOAD /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a
  *(.fini1)
  *(.fini1)
  *(.fini0)
- .fini0         0x0000043a        0x4 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_exit.o)
+ .fini0         0x00000378        0x4 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_exit.o)
  *(.fini0)
-                0x0000043e                _etext = .
+                0x0000037c                _etext = .
 
-.data           0x00800100        0x0 load address 0x0000043e
+.data           0x00800100        0x0 load address 0x0000037c
                 0x00800100                PROVIDE (__data_start, .)
  *(.data)
  .data          0x00800100        0x0 /usr/lib/gcc/avr/4.5.0/../../../../avr/lib/avr4/crtm48.o
@@ -291,12 +274,9 @@ LOAD /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a
  .data          0x00800100        0x0 lm73_functions_skel.o
  .data          0x00800100        0x0 twi_master.o
  .data          0x00800100        0x0 usart.o
- .data          0x00800100        0x0 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_udivmodhi4.o)
  .data          0x00800100        0x0 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_exit.o)
  .data          0x00800100        0x0 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_copy_data.o)
  .data          0x00800100        0x0 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_clear_bss.o)
- .data          0x00800100        0x0 /usr/lib/gcc/avr/4.5.0/../../../../avr/lib/avr4/libc.a(itoa.o)
- .data          0x00800100        0x0 /usr/lib/gcc/avr/4.5.0/../../../../avr/lib/avr4/libc.a(strrev.o)
  *(.data*)
  *(.rodata)
  *(.rodata*)
@@ -313,12 +293,9 @@ LOAD /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a
  .bss           0x00800100        0x0 lm73_functions_skel.o
  .bss           0x00800100        0x1 twi_master.o
  .bss           0x00800101        0x0 usart.o
- .bss           0x00800101        0x0 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_udivmodhi4.o)
  .bss           0x00800101        0x0 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_exit.o)
  .bss           0x00800101        0x0 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_copy_data.o)
  .bss           0x00800101        0x0 /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a(_clear_bss.o)
- .bss           0x00800101        0x0 /usr/lib/gcc/avr/4.5.0/../../../../avr/lib/avr4/libc.a(itoa.o)
- .bss           0x00800101        0x0 /usr/lib/gcc/avr/4.5.0/../../../../avr/lib/avr4/libc.a(strrev.o)
  *(.bss*)
  *(COMMON)
  COMMON         0x00800101       0x11 mega48.o
@@ -333,8 +310,8 @@ LOAD /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a
                 0x00800119                twi_bus_addr
                 0x0080011a                twi_msg_size
                 0x0080011b                PROVIDE (__bss_end, .)
-                0x0000043e                __data_load_start = LOADADDR (.data)
-                0x0000043e                __data_load_end = (__data_load_start + SIZEOF (.data))
+                0x0000037c                __data_load_start = LOADADDR (.data)
+                0x0000037c                __data_load_end = (__data_load_start + SIZEOF (.data))
 
 .noinit         0x0080011b        0x0
                 0x0080011b                PROVIDE (__noinit_start, .)
@@ -347,25 +324,21 @@ LOAD /usr/lib/gcc/avr/4.5.0/avr4/libgcc.a
  *(.eeprom*)
                 0x00810000                __eeprom_end = .
 
-.stab           0x00000000     0x19ec
+.stab           0x00000000     0x1758
  *(.stab)
  .stab          0x00000000      0x6cc /usr/lib/gcc/avr/4.5.0/../../../../avr/lib/avr4/crtm48.o
- .stab          0x000006cc      0x57c mega48.o
-                                0x588 (size before relaxing)
- .stab          0x00000c48      0x294 lm73_functions_skel.o
+ .stab          0x000006cc      0x570 mega48.o
+                                0x57c (size before relaxing)
+ .stab          0x00000c3c      0x294 lm73_functions_skel.o
                                 0x45c (size before relaxing)
- .stab          0x00000edc      0x534 twi_master.o
+ .stab          0x00000ed0      0x534 twi_master.o
                                 0x72c (size before relaxing)
- .stab          0x00001410      0x354 usart.o
+ .stab          0x00001404      0x354 usart.o
                                 0x51c (size before relaxing)
- .stab          0x00001764      0x1b0 /usr/lib/gcc/avr/4.5.0/../../../../avr/lib/avr4/libc.a(itoa.o)
-                                0x1bc (size before relaxing)
- .stab          0x00001914       0xd8 /usr/lib/gcc/avr/4.5.0/../../../../avr/lib/avr4/libc.a(strrev.o)
-                                 0xe4 (size before relaxing)
 
-.stabstr        0x00000000      0xd29
+.stabstr        0x00000000      0xcf0
  *(.stabstr)
- .stabstr       0x00000000      0xd29 /usr/lib/gcc/avr/4.5.0/../../../../avr/lib/avr4/crtm48.o
+ .stabstr       0x00000000      0xcf0 /usr/lib/gcc/avr/4.5.0/../../../../avr/lib/avr4/crtm48.o
 
 .stab.excl
  *(.stab.excl)

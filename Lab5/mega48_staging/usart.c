@@ -8,7 +8,7 @@ void USART0_init(unsigned int baud)
 	UBRR0 = baud;
 	
 	// Enable transmit and receive
-	UCSR0B = (1 << RXEN0) | (1 << TXEN0) | (1<<RXCIE0);
+	UCSR0B = (1 << RXEN0) | (1 << TXEN0);
 	
 	// Set frame format: 8 data bits, 1 stop bit
 	UCSR0C = (1 << UCSZ01) | (1 << UCSZ00);
