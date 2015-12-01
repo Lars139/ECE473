@@ -49,11 +49,14 @@ clean:
 all_clean:
 	rm -rf *.o *.elf *.lst *.map *.srec *.bin *.hex
 
+mega48_fuse_bit:
+	sudo avrdude -c OSUisp2 -p m48 -U lfuse:w:0xE2:m -v -C /home/bob/Desktop/ECE473/avrdude/avrdude/avrdude.conf
+
 #setup for usb programmer
 #hacked the permissions for stinkin' Redhat box
 program: $(PRG).hex
 	chmod 644 $(PRG).hex
-	sudo /home/bob/Desktop/ECE473/avrdude/avrdude/avrdude -C /home/bob/Desktop/ECE473/avrdude/avrdude/avrdude.conf -P usb -c osuisp2 -p m48 -e -U flash:w:$(PRG).hex -U lfuse:w:0xE2:m   -v
+	sudo /home/bob/Desktop/ECE473/avrdude/avrdude/avrdude -C /home/bob/Desktop/ECE473/avrdude/avrdude/avrdude.conf -P usb -c osuisp2 -p m48 -e -U flash:w:$(PRG).hex -v
 
 #avrdude -p $(PROGRAMMER_TARGET) -c usbasp -e -U flash:w:$(PRG).hex 
 #	avrdude -p $(PROGRAMMER_TARGET) -c osuisp2 -e -U flash:w:$(PRG).hex 

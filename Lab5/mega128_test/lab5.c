@@ -40,6 +40,7 @@
 #define CHANGING_VOL 3
 #define CLR_LCD_DISP 2
 #define FAHRENHEIT 1
+#define TEMP_LCD_DISP 0
 
 //------------------LCD String display control
 #define LCD_STR_LENGTH 14
@@ -143,9 +144,13 @@ static struct time_info{
 //         0 - not clear yet
 //         1 - LCD is all clear
 //
-//     1 faren_temp - The unit of temperature sensor
+//     1 FAHRENHEIT - The unit of temperature sensor
 //         0 - display in Celcius
 //         1 - display in Fahrenheit
+//
+//     0 TEMP_LCD_DISP - update LCD display for temperature
+//         0 - don't update
+//         1 - time to update the temperature on the LCD
 //
 uint8_t bare_status;
 
@@ -472,6 +477,8 @@ ISR(TIMER0_OVF_vect){
       now.tick = 0;
       if(bare_status & (1<<COLON_DISP))
 	 segment_data[2] = (segment_data[2] == 10) ? 11 : 10;
+      //Update the LCD
+      bare_status |= (1<<TEMP_LCD_DISP);
    }
    /*
       if(now.sec >= 60){
@@ -998,16 +1005,11 @@ uint8_t main(){
       spdr_val = SPDR;
 
       //------------------------------------------------ TWI Control
-      //FIXME: This work but make the 7seg flicker
-      /*
-      static uint16_t read_temp_cntr = 0;
-      if(read_temp_cntr == 2049 ){
+     if(bare_status & (1<<TEMP_LCD_DISP)){ 
       mega128_temperature();
-      read_temp_cntr = 0;
-      }else{
-	 ++read_temp_cntr;
-      }
-      */
+      bare_status &= ~(1<<TEMP_LCD_DISP);
+     }
+      
       //----------------------------------------------- USART
       //FIXME: To finish up
       USART_transmit(1010);
@@ -1030,12 +1032,12 @@ uint8_t main(){
 	 }
       }else{
       //FIXME: Have temperature display here w/o interfering w/ the other 
+      /*
 	 if(bare_status & (1<<CLR_LCD_DISP)){
 	    LCD_Clr();
 	    bare_status &= ~(1<<CLR_LCD_DISP);
 	 }
-	 
-	/* 
+	 */
 	 LCD_PutChar(mega128_temp_str[lcd_cursor]);
 	 if(lcd_cursor == 7){
 	    lcd_cursor=0;
@@ -1043,8 +1045,6 @@ uint8_t main(){
 	 }else{
 	    ++lcd_cursor;
 	 }
-	 */
-	 
 
       }
 
