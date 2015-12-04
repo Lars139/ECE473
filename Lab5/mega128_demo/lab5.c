@@ -1,1182 +1,649 @@
-// lab5.c
-// Rattanai Sawaspanich
-// Nov 19, 2015 
-
-//  HARDWARE SETUP:
-//  PORTA is connected to the segments of the LED display. and to the pushbuttons.
-//  PORTA.0 corresponds to segment a, PORTA.1 corresponds to segement b, etc.
-//  PORTB bits 4-6 go to a,b,c inputs of the 74HC138.
-//  PORTB bit 7 goes to the PWM transistor base.
-
-//#define F_CPU 16000000 // cpu speed in hertz 
-#include <avr/io.h>
-#include <avr/interrupt.h>
-#include <util/delay.h>
-#include <stdio.h>
-#include "music.c"
-#include "LCDDriver.h"
-#include "lm73_functions_skel.h"
-#include "twi_master.h"
-#include "usart.h"
-
-
-#define TRUE 1
-#define FALSE 0
-//-------------------Encoder control
-#define NUM_OF_ENCO 2
-#define ENCO_CW 1
-#define ENCO_CCW 2
-
-//------------------Snooze period
-// *_S for second, *_M for minute
-#define SNOOZE_GAP_S 10
-#define SNOOZE_GAP_M 0
-
-//------------------Bare_Status 
-#define COLON_DISP 7
-#define ARM_ALARM 6
-#define SOUND_ALARM 5
-#define MIL_TIME 4
-#define CHANGING_VOL 3
-#define CLR_LCD_DISP 2
-#define FAHRENHEIT 1
-#define TEMP_LCD_DISP 0
-
-//------------------LCD String display control
-#define LCD_STR_LENGTH 14
-#define LCD_STR "Bear was here!"
-
-
-/////////////////////////////////////////////////////////////////    GLOBAL VAR
-
-
-//holds data to be sent to the segments. logic zero turns segment on
-uint8_t segment_data[5];
-
-//decimal to 7-segment LED display encodings, logic "0" turns on segment
-//This is based on ACTIVE HIGH. 
-//STILL NEED ~ and >>1 or <<1;
-uint8_t dec_to_7seg[19]={
-   0xC0,//0
-   0xF9,//1
-   0xA4,//2
-   0xB0,//3
-   0x99,//4
-   0x92,//5
-   0x82,//6 
-   0xF8,//7
-   0x80,//8
-   0x98,//9
-   0xFF,//OFF (10)
-   0xFC,//Full Colon (11)
-   0x40,//0. (12)
-   0x79,//1. (13)
-};
-
-
-//For 7seg number string display
-static uint16_t cur_vol=50;
-uint8_t  digit=0;
-uint8_t  inc_step = 1;
-
-//Stages for the buttons
-enum stages {
-   NONE=0x0, 
-   EDIT_STIME=0b10000001, EDIT_12_24=0b10000010, EDIT_ATIME=0b10000100,
-   EDIT_ALREN=0b10001000,
-   SNOOZE=0b01111111
-} mode;
-uint8_t snooze_button = 5;
-
-//For LED_indication of alarm set
-uint8_t run_led;
-
-//Keep tracked of the pressed button
-uint8_t pressed_button = 0x00;
-
-//For the SPI communication 
-uint8_t ret_enc = 0;    //return val from Encoder
-uint8_t spdr_val = 0;   //value in SPDR
-
-//For TWI communication with local (mega128) temperature sensor
-uint8_t lm73_rd_buf[2]; 
-uint8_t lm73_wr_buf[2]; 
-
-//Temperature value
-char lcd_str[16];
-char mega48_temp_str[9];
-char mega128_temp_str[9];
-//For Timekeeping
-// now -- current displaying time
-// alarm_time -- alarm time
-// snooze_time -- time of snooze
-static struct time_info{
-   uint8_t  hr;
-   uint8_t  min;
-   uint8_t  sec;
-   uint16_t tick;
-} now, alarm_time, snooze_time, vol_disp_time;
-
-
-//A status byte containing all the toggling bits
-//status = [ 7seg_mode_disp | arm_alarm | sound_alarm | mil_time | changing_vol | LCD_Clr | faren_temp ...??? ]
-//         7                                                   0
-//     7 colon_disp - set mode of display for 7seg display
-//         0 - int string (w/o colon)
-//         1 - time format (w/ colon)
-//
-//     6 arm_alarm - whether the alarm has been armed or not
-//         0 - disarm
-//         1 - arm
-//
-//     5 sound_alarm - set if the alarm should be going off
-//         0 - mute
-//         1 - make noise
-// 
-//     4 mil_time - Set if 12 or 24 hour mode will be displayed
-//         0 - 24 hr mode
-//         1 - 12 am/pm mode
-//
-//     3 changing_vol - Set if the volume is changing
-//         0 - volumn is not changing
-//         1 - volume is changing
-//
-//     2 LCD_Clr - clear the LCD display
-//         0 - not clear yet
-//         1 - LCD is all clear
-//
-//     1 FAHRENHEIT - The unit of temperature sensor
-//         0 - display in Celcius
-//         1 - display in Fahrenheit
-//
-//     0 TEMP_LCD_DISP - update LCD display for temperature
-//         0 - don't update
-//         1 - time to update the temperature on the LCD
-//
-uint8_t bare_status;
-
-///////////////////////////////////////////////////////////////////////    ADC 
-/* Func: ADC_init()
- * Desc: Initilize an ADC
- */
-void ADC_init(void){
-
-   //Set all PORTF to be inputs
-   DDRF &= ~(1<<0);
-   //Active high 
-   PORTF = 0x00;
-
-   //Using external common GND, Left-Aligned. 
-   ADMUX = (1<<REFS0 | 1<<ADLAR);
-
-   //Enable ADC, Start Conversion, Free Running Mode, Interrupt, /128 prescale.
-   ADCSRA = (1<<ADEN | 1<<ADSC | 1<<ADFR | 1<<ADIE | 1<<ADPS2 | 1<<ADPS1 | 1<<ADPS0);
-
-}
-
-
-//******************************************************************************
-//                            chk_buttons                                      
-//Checks the state of the button number passed to it. It shifts in ones till   
-//the button is pushed. Function returns a 1 only once per debounced button    
-//push so a debounce and toggle function can be implemented at the same time.  
-//Adapted to check all buttons from Ganssel's "Guide to Debouncing"            
-//Expects active low pushbuttons on PINA port.  Debounce time is determined by 
-//external loop delay times 12. 
-//
-uint8_t chk_buttons(uint8_t button) {
-   static uint16_t state = 0; //holds present state
-   state = (state << 1) | ( bit_is_clear(PINA, button)) | 0xE000;
-   if (state == 0xF000) return 1;
-   return 0;
-
-}
-//***********************************************************************************
-//                                   segment_sum                                    
-//takes a 16-bit binary input value and places the appropriate equivalent 4 digit 
-//BCD segment code in the array segment_data for display.                       
-//array is loaded at exit as:  |digit3|digit2|colon|digit1|digit0|
-void segsum(uint16_t val) {
-   //Let's not use colon here
-   bare_status &= ~(1<<COLON_DISP);
-   //determine how many digits there are 
-   //Filling in backward
-   uint8_t i;
-   if( !(bare_status & (1<<COLON_DISP)) ){
-      segment_data[0] = val%10;
-      segment_data[1] = val/10%10;
-      segment_data[2] = 10; 
-      segment_data[3] = val/100%10;
-      segment_data[4] = val/1000%10;
-
-      //Turning leading 0 off
-      if(segment_data[4]==0){
-	 segment_data[4] = 10;
-
-	 if(segment_data[3]==0){
-	    segment_data[3] = 10;
-
-	    if(segment_data[1]==0){
-	       segment_data[1] = 10;
-	    }
-	 }
-      }
-
-
-   }
-   //Prevent ghosting
-   PORTB = ((0x8<<4) & PORTB)|(5<<4); 
-}//segment_sum
-
-//Displaying time
-void disp_time(void){
-   //Colon enabled
-   bare_status |= (1<<COLON_DISP);
-   if(bare_status & (1<<COLON_DISP)){
-      if((mode != EDIT_ATIME)){
-	 if(bare_status & (1<<MIL_TIME)){ //AM-PM mode
-	    if(now.hr > 12){
-	       segment_data[4] = ((now.hr-12)/10) + 12; //0. or 1.
-	       segment_data[3] = ((now.hr-12)%10);
-	    }else if(now.hr == 0){
-	       segment_data[4] = 1;
-	       segment_data[3] = 2;
-	    }else if(now.hr == 12){
-	       segment_data[4] = 13; //1.
-	       segment_data[3] = 2; 
-	    }else{
-	       segment_data[4] = now.hr/10;
-	       segment_data[3] = now.hr%10;
-	    }
-	    segment_data[1] = now.min/10;
-	    segment_data[0] = now.min%10;
-	 }else{
-	    segment_data[4] = now.hr/10;
-	    segment_data[3] = now.hr%10 ;
-	    segment_data[1] = now.min/10;
-	    segment_data[0] = now.min%10;
-	 }
-      }else{
-	 if(bare_status & (1<<MIL_TIME)){ //AM-PM mode
-	    if(alarm_time.hr > 12){
-	       segment_data[4] = ((alarm_time.hr-12)/10) + 12; //0. or 1.
-	       segment_data[3] = ((alarm_time.hr-12)%10);
-	    }else if(alarm_time.hr == 0){
-	       segment_data[4] = 1;
-	       segment_data[3] = 2;
-	    }else if(alarm_time.hr == 12){
-	       segment_data[4] = 13; //1.
-	       segment_data[3] = 2; 
-	    }else{
-	       segment_data[4] = alarm_time.hr/10;
-	       segment_data[3] = alarm_time.hr%10;
-	    }
-	    segment_data[1] = alarm_time.min/10;
-	    segment_data[0] = alarm_time.min%10;
-	 }else{
-	    segment_data[4] = alarm_time.hr/10;
-	    segment_data[3] = alarm_time.hr%10 ;
-	    segment_data[1] = alarm_time.min/10;
-	    segment_data[0] = alarm_time.min%10;
-	 }
-
-      }
-   }
-   //Prevent ghosting
-   PORTB = ((0x8<<4) & PORTB)|(5<<4); 
-}
-
-
-/***********************************************************************/
-//                            spi_init                               
-//Initalizes the SPI port on the mega128. Does not do any further   
-//external device specific initalizations.  Sets up SPI to be:                        
-//master mode, clock=clk/2, cycle half phase, low polarity, MSB first
-//interrupts disabled, poll SPIF bit in SPSR to check xmit completion
-/***********************************************************************/
-void spi_init(void){
-   DDRB  |=  (1<<PB2) | (1<<PB1) | (1<<PB0);           //Turn on SS, MOSI, SCLK
-   SPCR  |=  ( 1<<SPE | 1<<MSTR );  //set up SPI mode
-   SPSR  |=  (1<<SPI2X);           // double speed operation
-}//spi_init
-
-
-////////////////////////////////////////////////////////////////////////  TCNT 
-/***********************************************************************/
-//                              tcnt0_init                             
-//Initalizes timer/counter0 (TCNT0). TCNT0 is running in async mode
-//with external 32khz crystal.  Runs in normal mode with no prescaling.
-//Interrupt occurs at overflow 0xFF.
-//
-void tcnt0_init(void){
-   TIMSK |= (1<<TOIE0);
-   TCCR0 |= (1<<CS02 | 1<<CS00);
-}
-
-
-/***********************************************************************/
-/* Func: tcnt1_init()
- * Desc: Initilize timer/counter1 (TCNT1) as a alarm_tone generator.
- * 	 Compare A, CTC Mode, /1024 pre-scaling
- * Input : None
- * Output: None
- */
-void tcnt1_init(void){
-   //PORTC Pin2 as an output for TCNT waveform
-   DDRC  |= (1<<PC2);
-   //Enable timer interrupt mask, comparing w/ OCF1A
-   TIMSK |= (1<<OCIE1A);
-   //CTC mode, /1024 prescaling 
-   TCCR1B = (1<<WGM12 | 1<<CS12 | 1<<CS10);
-   OCR1A = 0xFFFF;
-}
-
-
-/***********************************************************************/
-/* Func: tcnt2_init()
- * Desc: Initilize timer/counter2 (TCNT2) as a light dimmer (PWM) 
- * 	 PWM Mode, No pre-scaling
- *
- * 	 The Overflow of this counter will be used to check the 
- * 	 button and encoder
- *
- * Input : None
- * Output: None
- */
-void tcnt2_init(void){
-   //PORTB Pin7 as an output for PWM waveform
-   DDRB  |= (1<<PB7);
-
-   //Enable interrupt for the TCNT2 for button check and encoder
-   TIMSK |= (1<<TOIE2);
-
-   //Fast-PWM mode, no prescaling, Set OCR2 on compare match
-   TCCR2 = (1<<WGM21 | 1<<WGM20 | 1<<CS20 | 1<<COM21 | 1<<COM20);
-
-   //Clear at 0x64
-   OCR2  = 0xFF; 
-}
-
-
-/***********************************************************************/
-/* Func: tcnt3_init()
- * Desc: Initilize timer/counter3 (TCNT3) as a audio volume controller. 
- * 	 PWM Mode, No pre-scaling
- * Input : None
- * Output: None
- */
-void tcnt3_init(void){
-   //PORTE Pin3 as an output for PWM waveform
-   DDRE  |= (1<<PE3);
-
-   //Fast-PWM mode, no prescaling, ICR3 top, OCR3A comp (clear on match) 
-   TCCR3A = (1<<COM3A1 | 1<<COM3A0 | 1<<WGM31);
-   TCCR3B = (1<<WGM33 | 1<<WGM32 | 1<<CS30);
-
-   ICR3   = 0x64;
-   OCR3A  = 90; 
-}
-
-
-
-/////////////////////////////////////////////////////////// MY CUSTOM FUNCTIONS
-
-/***********************************************************************/
-/* Func: read_encoder
- * Desc: return value if the encoder is rotating CW or CCW
- *
- * Input : enco_num  - Number of Encoder {0,1,...}
- *         SPDR      - value of current SPDR
- *         
- * Output: 0 - Idle
- *         1 - Encoder1 has rotated CW  1 unit
- *         2 - Encoder1 has rotated CCW 1 unit
- */
-uint8_t read_encoder(uint8_t enco_num, uint8_t spdr_val){
-   static uint8_t enco_lookup_table[] = {0,1,2,0,2,0,0,1,1,0,0,2,0,2,1,0};
-   static uint8_t enco_trend[NUM_OF_ENCO] = {0};
-   static uint8_t enco_history[NUM_OF_ENCO] = {0};
-
-   uint8_t cur_enco = 0;
-   uint8_t idx = 0;
-   uint8_t dir = 0;
-   uint8_t out = 0;
-
-   idx = (enco_history[enco_num]<<2) | ( cur_enco=(((0x3<<(enco_num*2)) & spdr_val)>>(enco_num*2)) );
-   dir = enco_lookup_table[idx];
-   (dir == ENCO_CW) ? (++(enco_trend[enco_num])): 0; 
-   (dir == ENCO_CCW) ? (--(enco_trend[enco_num])): 0; 
-
-   if( cur_enco == 0b11 ){
-      if( (enco_trend[enco_num]>1) && (enco_trend[enco_num]<100) ){
-	 out = ENCO_CW;
-      }
-      if( (enco_trend[enco_num]<=0xFF) && (enco_trend[enco_num]>0x90) ){
-	 out = ENCO_CCW;
-      }
-      enco_trend[enco_num] = 0;
-   }
-   enco_history[enco_num] = cur_enco;
-
-   return out;
-}
-
-
-/***********************************************************************/
-/* Func: mega128_temperature(void)
- * Desc: Do TWI communication with temperature sensor
- * Output temperature string is stored in lcd_str w/ size of 9 
- */
-void mega128_temperature(){
-   uint16_t mega128_temp;
-   char temp_unit = 'C';
-   //read temperature data from LM73 (2 bytes) (twi_mas ter.h)
-   twi_start_rd(LM73_ADDRESS,lm73_rd_buf,2); 
-   //wait for it to finish
-   _delay_ms(2); 
-   //save high temperature byte into mega128_temp
-   mega128_temp = lm73_rd_buf[0]; 
-   //shift it into upper byte
-   mega128_temp = mega128_temp << 8; 
-   //"OR" in the low temp byte to mega128_temp
-   mega128_temp |= lm73_rd_buf[1];
-   //Convert the unit if needed
-   //FIXME
-   if(bare_status & (1<<FAHRENHEIT)){
-      mega128_temp = ((mega128_temp*9)+160)/5;
-      temp_unit = 'F';
-   }
-
-   //Formatting the output
-   if(mega128_temp & (1<<0xF))//Check signed bit
-      snprintf(mega128_temp_str,9, "-%d.%-2d %c",mega128_temp>>7, ((mega128_temp & (0x3<<5))*25)>>5, temp_unit);
-   else
-      snprintf(mega128_temp_str,9, " %d.%-2d %c",mega128_temp>>7, ((mega128_temp & (0x3<<5))*25)>>5, temp_unit);
-
-}
-
-char bluetooth_to_ASCII(char val){
-   if(val == 79)
-      return 'A';
-   else if(val == 39)
-      return 'B';
-   else if(val == 78)
-      return 'C';
-   else if(val == 19)
-      return 'D';
-   else if(val == 77)
-      return 'E';
-   else if(val == 38)
-      return 'F';
-   else if(val == 76)
-      return 'G';
-   else if(val == 9)
-      return 'H';
-   else if(val == 75)
-      return 'I';
-   else if(val == 37)
-      return 'J';
-   else if(val == 74)
-      return 'K';
-   else if(val == 18)
-      return 'L';
-   else if(val == 73)
-      return 'M';
-   else if(val == 36)
-      return 'N';
-   else if(val == 72)
-      return 'O';
-   else if(val == 4)
-      return 'P';
-   else if(val == 71)
-      return 'Q';
-   else if(val == 35)
-      return 'R';
-   else if(val == 70)
-      return 'S';
-   else if(val == 17)
-      return 'T';
-   else if(val == 69)
-      return 'U';
-   else if(val == 34)
-      return 'V';
-   else if(val == 68)
-      return 'W';
-   else if(val == 8)
-      return 'X';
-   else if(val == 67)
-      return 'Y';
-   else if(val == 33)
-      return 'Z';
-}
-
-
-
-/***********************************************************************/
-/* Func: bluetooth()
- * Desc: set the barestatus as you wish 
- */
-//char lcd_map[26] = {'}', '{', 'y','w','u','s','q','o','m','k','i','g','e','c','a','-',']','[','Y','W','U','S','Q','O','M','K'};
-void bluetooth(){
-   static unsigned char cmd;
-
-   cmd = USART_receive(); 
-   cmd = bluetooth_to_ASCII(cmd);
-   lcd_str[0] = cmd;
-   switch (cmd){
-      case 'P':
-	 bare_status |= (1<<ARM_ALARM);
-	 bare_status |= (1<<SOUND_ALARM);
-	 break;
-
-      case 'Q':
-	 bare_status &= ~(1<<ARM_ALARM);
-	 break;
-
-      case 'L':
-	 bare_status |= (1<<CHANGING_VOL);
-	 if(cur_vol <100)
-	    cur_vol += 10;
-	 vol_disp_time.hr = now.hr;
-	 vol_disp_time.min= now.min;
-	 vol_disp_time.sec = now.sec + 3;
-
-	 //Wrap around
-	 if(vol_disp_time.sec >=60 ){
-	    ++vol_disp_time.min;
-	    vol_disp_time.sec %= 60;
-	 }
-	 if(vol_disp_time.min>=60 ){
-	    ++vol_disp_time.hr;
-	    vol_disp_time.min %= 60;
-	 }
-	 if(vol_disp_time.hr>=24 ){
-	    vol_disp_time.hr %= 24;
-	 }
-	 break;
-
-      case 'A':
-	 bare_status |= (1<<CHANGING_VOL);
-	 if(cur_vol >0)
-	    cur_vol -= 10;
-	 vol_disp_time.hr = now.hr;
-	 vol_disp_time.min= now.min;
-	 vol_disp_time.sec = now.sec + 3;
-
-	 //Wrap around
-	 if(vol_disp_time.sec >=60 ){
-	    ++vol_disp_time.min;
-	    vol_disp_time.sec %= 60;
-	 }
-	 if(vol_disp_time.min>=60 ){
-	    ++vol_disp_time.hr;
-	    vol_disp_time.min %= 60;
-	 }
-	 if(vol_disp_time.hr>=24 ){
-	    vol_disp_time.hr %= 24;
-	 }
-	 break;
-
-   }
-
-}
-
-
-
-///////////////////////////////////////////////////////////  ISR_SECTION
-
-
-//-------------------------------------------------------------- ADC_ISR
-ISR(ADC_vect){
-   OCR2 = (ADCH < 100) ? (100-ADCH) : 1; 
-}
-
-
-//-------------------------------------------------------------- ISR_TIMER0
-ISR(TIMER0_OVF_vect){
-   //------------------------------------------------------- Time Keeper (sec)
-   ++now.tick;
-   if(now.tick == 245)
-      ++run_led;
-   if(now.tick == 489){
-      ++run_led;
-      ++now.sec;
-      now.tick = 0;
-      if(bare_status & (1<<COLON_DISP))
-	 segment_data[2] = (segment_data[2] == 10) ? 11 : 10;
-      //Update the LCD
-      bare_status |= (1<<TEMP_LCD_DISP);
-   }
-   /*
-      if(now.sec >= 60){
-      bare_flags |= (1<<0);
-      now.sec = 0;
-      }
-      */
-
-   //----------------------------------------------------------- Music Timing
-   static uint8_t ms = 0;
-   ms++;
-   if(ms % 8 == 0) {
-      //for note duration (64th notes) 
-      beat++;
-   }        
-
-}
-
-//---------------------------------------------------------------- ISR_TIMER1
-/* ISR_TIMER1_COMPA_vect
- *     The interrupt is involked to generate TCNT1_alarm_tone
- *
- * Song: Beep Boop Beep Boop
- * Composer: Bear's AVR Mega128
- * Date 10 Nov 2015
- *
- */
-//TODO: time this ISR!
-ISR(TIMER1_COMPA_vect){
-   //Should it be making sound? 
-   if(bare_status & (1<<SOUND_ALARM)){
-      //Using PORTC Pin2 as an output
-      PORTC ^= (1<<PC2);
-      if(beat >= max_beat){
-	 play_note('A'+(rand()%7),rand()%2,6+(rand()%3),rand()%16);
-      }
-   }
-}
-
-
-//---------------------------------------------------------------- ISR_TIMER2
-/* ISR_TIMER2_OVF_vect
- *     The interrupt is a general purpose interrupt
- *     tick 0x0: Check Button
- *     tick 0x1: State Machine 
- *     tick 0x2: Time Keeper (minutes, hours)
- *     tick 0x3: Mode Enforcer (Mealy Output)
- *     tick 0x4: Check Alarm! 
- *     tick 0xF: SPI
- *
- */
-ISR(TIMER2_OVF_vect){
-   //Scaling down the ISR so it doesn't hord up all the processing time
-   static uint8_t tcnt2_cntr = 0;
-   //Calibrating for the crystal time off
-   static uint8_t sec_calibrate = 0;
-   //Use toggler to check if the bit value has been change from the previos 
-   //interrupt (you want to change it only once) 
-   //toggler = [ EDIT_12_24 | EDIT_ALREN | SNOOZE | sound_alarm | change_vol ...?]
-   static uint8_t toggler;
-
-   if(!(pressed_button & (1<<7)))
-      toggler = 0x00;
-
-   switch (tcnt2_cntr){
-      case 0x0:
-	 //----------------------------------------------------- BUTTON_&_7-SEG
-	 //make PORTA an input port with pullups 
-	 PORTA = 0xFF;
-	 DDRA = 0x00;
-	 //enable tristate buffer for pushbutton switches
-	 PORTB = 0x70;
-	 //now check each button and increment the count as needed
-	 for(uint8_t i=0; i<8; ++i){
-	    if(chk_buttons(i))
-	       pressed_button ^= (1<<i);
-	 }
-	 //disable tristate buffer for pushbutton switches
-	 //To do so, we use enable Y5 on the decoder (NC)
-	 PORTB &= 0x5F;
-	 break;
-
-      case 0x1:
-	 //----------------------------------------------------- STATE_MACHINE 
-	 switch(mode){
-	    case NONE:
-	       if(pressed_button & (1<<7)){
-		  if (pressed_button & (1<<0)){
-		     mode = EDIT_STIME;
-		  }else if(pressed_button & (1<<1)){
-		     mode = EDIT_12_24;
-		  }else if(pressed_button & (1<<2)){
-		     mode = EDIT_ATIME;
-		  }else if(pressed_button & (1<<3)){
-		     mode = EDIT_ALREN;
-		  }
-	       }else if( ~(pressed_button & (1<<7)) ){
-		  pressed_button &= 0b10100000;
-		  if(pressed_button & (1<<snooze_button)){
-		     mode = SNOOZE;
-		  }else{
-		     mode = NONE;
-		  }
-	       }
-	       break;
-
-	    case EDIT_STIME:
-	       if(pressed_button & (1<<7)){
-		  if (pressed_button & (1<<0)){
-		     mode = EDIT_STIME;
-		  }else if(pressed_button & (1<<1)){
-		     mode = EDIT_12_24;
-		  }else if(pressed_button & (1<<2)){
-		     mode = EDIT_ATIME;
-		  }else if(pressed_button & (1<<3)){
-		     mode = EDIT_ALREN;
-		  }
-	       }else if( ~(pressed_button & (1<<7)) ){
-		  pressed_button &= 0b10100000;
-		  if(pressed_button & (1<<snooze_button)){
-		     mode = SNOOZE;
-		  }else{
-		     mode = NONE;
-		  }
-	       }
-	       break;
-
-	    case EDIT_12_24:
-	       if(pressed_button & (1<<7)){
-		  if (pressed_button & (1<<0)){
-		     mode = EDIT_STIME;
-		  }else if(pressed_button & (1<<1)){
-		     mode = EDIT_12_24;
-		  }else if(pressed_button & (1<<2)){
-		     mode = EDIT_ATIME;
-		  }else if(pressed_button & (1<<3)){
-		     mode = EDIT_ALREN;
-		  }
-	       }else if( ~(pressed_button & (1<<7)) ){
-		  pressed_button &= 0b10100000;
-		  if(pressed_button & (1<<snooze_button)){
-		     mode = SNOOZE;
-		  }else{
-		     mode = NONE;
-		  }
-	       }
-	       break;
-
-	    case EDIT_ATIME:
-	       if(pressed_button & (1<<7)){
-		  if (pressed_button & (1<<0)){
-		     mode = EDIT_STIME;
-		  }else if(pressed_button & (1<<1)){
-		     mode = EDIT_12_24;
-		  }else if(pressed_button & (1<<2)){
-		     mode = EDIT_ATIME;
-		  }else if(pressed_button & (1<<3)){
-		     mode = EDIT_ALREN;
-		  }
-	       }else if( ~(pressed_button & (1<<7)) ){
-		  pressed_button &= 0b10100000;
-		  if(pressed_button & (1<<snooze_button)){
-		     mode = SNOOZE;
-		  }else{
-		     mode = NONE;
-		  }
-	       }
-	       break;
-
-	    case EDIT_ALREN:
-	       if(pressed_button & (1<<7)){
-		  if (pressed_button & (1<<0)){
-		     mode = EDIT_STIME;
-		  }else if(pressed_button & (1<<1)){
-		     mode = EDIT_12_24;
-		  }else if(pressed_button & (1<<2)){
-		     mode = EDIT_ATIME;
-		  }else if(pressed_button & (1<<3)){
-		     mode = EDIT_ALREN;
-		  }
-	       }else if( ~(pressed_button & (1<<7)) ){
-		  pressed_button &= 0b10100000;
-		  if(pressed_button & (1<<snooze_button)){
-		     mode = SNOOZE;
-		  }else{
-		     mode = NONE;
-		  }
-	       }
-	       break;
-
-	    case SNOOZE:
-	       if(pressed_button & (1<<7)){
-		  if (pressed_button & (1<<0)){
-		     mode = EDIT_STIME;
-		  }else if(pressed_button & (1<<1)){
-		     mode = EDIT_12_24;
-		  }else if(pressed_button & (1<<2)){
-		     mode = EDIT_ATIME;
-		  }else if(pressed_button & (1<<3)){
-		     mode = EDIT_ALREN;
-		  }
-	       }else if( ~(pressed_button & (1<<7)) ){
-		  pressed_button &= 0b10100000;
-		  if(pressed_button & (1<<snooze_button)){
-		     mode = SNOOZE;
-		  }else{
-		     mode = NONE;
-		  }
-	       }
-	       break;
-
-	    default:
-	       mode = NONE;
-	       break;
-
-	 }//End Here -- Switch(mode)
-	 break;//End Here -- 0xA;
-
-      case 0x2:
-	 //------------------------------------------------------ Time Keeper
-
-	 //Check if a delayed second has been full.
-	 if((sec_calibrate == 11) && (now.sec == 20)){
-	    ++now.sec;
-	    sec_calibrate = 0;
-	 }
-
-	 //Check if a full minute
-	 if(now.sec == 60){
-	    ++now.min;
-	    ++sec_calibrate;
-	    now.sec = 0;
-	 }
-
-	 //Check if a full hour
-	 if(now.min == 60){
-	    now.min = 0;
-	    ++now.hr;
-	 }
-
-	 //Check if a full day
-	 if(now.hr ==24){
-	    now.hr = 0;
-	 }
-	 break;
-
-      case 0x3:
-	 //----------------------------------------------------- SM Enforcer
-	 //Enforcing no colon policy
-	 if( !(bare_status & (1<<COLON_DISP)) )
-	    segment_data[2] = 0x10;
-	 switch(mode){
-	    case EDIT_STIME:
-	       //Send the value to read_encoder(num_enco, spdr_val);
-	       //Store the returning value to decide if inc or dec
-	       ret_enc = read_encoder(1, spdr_val);
-	       //Inc/Dec the hour accordingly
-	       if(ret_enc == ENCO_CW){ //CW adding the hour
-		  now.hr += 1;
-	       }else if(ret_enc == ENCO_CCW){
-		  now.hr -= 1;
-	       }
-
-	       ret_enc = read_encoder(0, spdr_val);
-	       //Inc/Dec the minute accordingly
-	       if(ret_enc == ENCO_CW){ //CW adding the minute
-		  now.min += 1;
-	       }else if(ret_enc == ENCO_CCW){
-		  if(now.min != 0)
-		     now.min -= 1;
-	       }
-
-	       if(now.hr >= 24){
-		  now.hr = 0;
-	       }
-	       if(now.min >= 60){
-		  now.min = 0;
-		  ++now.hr;
-	       }
-	       break;
-
-	    case EDIT_12_24:
-	       if(!(toggler & (1<<7))){
-		  bare_status ^= (1<<MIL_TIME);
-		  toggler |= (1<<7);
-	       }
-	       break;
-
-	    case EDIT_ATIME:
-	       //Send the value to read_encoder(num_enco, spdr_val);
-	       //Store the returning value to decide if inc or dec
-	       ret_enc = read_encoder(1, spdr_val);
-	       //Inc/Dec the sum accordingly
-	       if(ret_enc == ENCO_CW){ //CW adding the sum
-		  alarm_time.hr += 1;
-	       }else if(ret_enc == ENCO_CCW){
-		  alarm_time.hr -= 1;
-	       }
-
-	       ret_enc = read_encoder(0, spdr_val);
-	       //Inc/Dec the sum accordingly
-	       if(ret_enc == ENCO_CW){ //CW adding the sum
-		  alarm_time.min += 1;
-	       }else if(ret_enc == ENCO_CCW){
-		  if(alarm_time.min != 0)
-		     alarm_time.min -= 1;
-	       }
-
-	       if(alarm_time.hr >= 24){
-		  alarm_time.hr = 0;
-	       }
-	       if(alarm_time.min >= 60){
-		  alarm_time.min = 0;
-		  ++alarm_time.hr;
-	       }
-	       if(!(toggler & (1<<6))){//Has the bare_status been toggled?
-
-		  //Enable arm the alarm
-		  bare_status |= (1<<ARM_ALARM); 
-		  toggler |= (1<<6);
-	       }
-	       break;
-
-	    case EDIT_ALREN:
-	       if(!(toggler & (1<<6))){//Has the bare_status been toggled?
-
-		  //Enable arm the alarm
-		  bare_status ^= (1<<ARM_ALARM); 
-		  toggler |= (1<<6);
-
-		  if(!(bare_status & (1<<ARM_ALARM))){
-		     //Turn off the alarm
-		     bare_status &= ~(1<<SOUND_ALARM);
-		  }
-	       }
-	       break;
-
-	    case SNOOZE:
-	       if(!(toggler & (1<<5))){//Has the bare_status been toggled?
-		  //Turn off the noise
-		  bare_status ^= (1<<SOUND_ALARM); 
-		  toggler |= (1<<5);
-		  //Clear alarm bit so it can go off again
-		  toggler &= ~(1<<4);
-	       }
-
-	       //Set snooze time
-	       snooze_time.hr = now.hr;
-	       snooze_time.min = now.min + SNOOZE_GAP_M;
-	       snooze_time.sec = now.sec + SNOOZE_GAP_S;
-
-	       if(snooze_time.sec >= 60){
-		  snooze_time.sec %= 60;
-		  ++snooze_time.min;
-	       }
-
-	       if(snooze_time.min >= 60){
-		  snooze_time.min %= 60;
-		  ++snooze_time.hr;
-	       }
-	       break;
-
-	    case NONE:
-	       // make the sound adjustment AND segsum-disp_time select
-	       ret_enc = read_encoder(0, spdr_val);
-	       //Inc/Dec the volume accordingly
-	       if(ret_enc == ENCO_CW){ //CW adding the minute
-		  if(cur_vol < 100)
-		     cur_vol += 10;
-		  bare_status |= (1<<CHANGING_VOL);
-		  vol_disp_time.hr = now.hr;
-		  vol_disp_time.min= now.min;
-		  vol_disp_time.sec = now.sec + 3;
-	       }else if(ret_enc == ENCO_CCW){
-		  bare_status |= (1<<CHANGING_VOL);
-		  if(cur_vol != 0)
-		     cur_vol -= 10;
-		  vol_disp_time.hr = now.hr;
-		  vol_disp_time.min= now.min;
-		  vol_disp_time.sec = now.sec + 3;
-	       }
-
-	       //Wrap around
-	       if(vol_disp_time.sec >=60 ){
-		  ++vol_disp_time.min;
-		  vol_disp_time.sec %= 60;
-	       }
-	       if(vol_disp_time.min>=60 ){
-		  ++vol_disp_time.hr;
-		  vol_disp_time.min %= 60;
-	       }
-	       if(vol_disp_time.hr>=24 ){
-		  vol_disp_time.hr %= 24;
-	       }
-
-
-	       if( (now.hr == vol_disp_time.hr)&&(now.min == vol_disp_time.min)
-		     &&(now.sec == vol_disp_time.sec) ){
-		  if(!(toggler & (1<<3))){
-
-		     //Back to time display mode 
-		     bare_status &= ~(1<<CHANGING_VOL); 
-		     segment_data[2]=11;
-		     toggler |= (1<<3);
-		  }
-	       }//End Here -- check now == vol_disp_time
-
-	       OCR3A = 100 - cur_vol;
-	       break;
-	 }
-	 break;
-
-      case 0x4:
-	 //------------------------------------------------- Setting Alarm Off 
-	 if(bare_status & (1<<ARM_ALARM)){
-	    if(((now.hr == alarm_time.hr)&&(now.min == alarm_time.min)
-		     &&(now.sec == alarm_time.sec)) || ((now.hr == snooze_time.hr)&&
-		     (now.min == snooze_time.min)&&(now.sec == snooze_time.sec)))
-	       if(!(toggler & (1<<4))){//Has the bare_status been toggled?
-
-		  //Set the alarm off
-		  bare_status |= (1<<SOUND_ALARM); 
-		  toggler |= (1<<4);
-	       }
-
-
-	 }else{
-	    if(!(toggler & (1<<4))){//Has the bare_status been toggled?
-	       //Turn off alarm if alarm is not set
-	       bare_status &= ~(1<<SOUND_ALARM); 
-	       toggler |= (1<<4);
-	    }
-	 }
-	 break;
-
-   }
-   ++tcnt2_cntr;
-}
-
-
-
-////////////////////////////////////////////////////////////////////////  MAIN
-uint8_t main(){
-   ADC_init();
-   tcnt0_init();
-   tcnt1_init();
-   tcnt2_init();
-   tcnt3_init();
-   spi_init();
-   init_twi();
-   LCD_Init();
-   //lcd_init();
-   USART0_init(103);
-
-   //Set TWI pointer to the temperature output
-   lm73_set_ptr_to_read();
-
-   //Set a Colon display
-   segment_data[2]=11;
-   //Set an initial state machine
-   mode = NONE;
-
-   //PortE Pin6 for Encoder strobe
-   //PORTE Pin6 as an output for Encoder Strobe
-   DDRE  |= (1<<PE6);
-   PORTE = 0xFF;
-
-   //PORTD Pin as an output for the BarGraph
-   DDRD |= (1<<PD2);	 
-
-   //Enable interrupt
-   sei();
-
-   //PORTB=[ pwm | encd_sel2 | encd_sel1 | encd_sel0 | MISO | MOSI | SCK | SS ]
-   //set port bits 4-7 B as outputs
-
-   while(1){
-
-      //------------------------------------------------ Display 7seg
-      //break up the disp_value to 4, BCD digits in the array: call (segsum)
-      if(bare_status & (1<<CHANGING_VOL) && mode==NONE)
-	 segsum(cur_vol);
-      else
-	 disp_time();
-      //make PORTA an output
-      DDRA = 0xFF;
-      //prevent ghosting
-      PORTA = 0xFF;
-
-      if(digit==2 && !(bare_status&(1<<COLON_DISP)))
-	 ++digit;
-      //send 7 segment code to LED segments
-      PORTA = dec_to_7seg[segment_data[digit]];
-      //send PORTB the digit to display
-      PORTB = ((0x8<<4) & PORTB)|(digit<<4); 
-      //update digit to display
-      digit = (++digit)%5;
-
-      //----------------------------------------------- SPI
-      DDRB |= 0xF1;
-      //Load the mode into SPDR
-      if(bare_status & (1<<ARM_ALARM)){
-	 SPDR = (pressed_button & (1<<7)) | (0xFF & 1<<((run_led)%7)); 
-      }else{
-	 SPDR = mode | (pressed_button & 0b10000000);
-	 //        SPDR = pressed_button;
-      }
-      //Prevent ghosting for 7seg
-      //PORTB = ((0x8<<4) & PORTB)|(5<<4); 
-      //Wait until you're done sending
-      while(!(SPSR & (1<<SPIF)));
-
-      //Strobe BarGraph
-      PORTD |= (1<<PD2);
-      PORTD &= ~(1<<PD2);
-
-      //Strobe Encoder 
-      PORTE &= ~(1<<PD6);
-      PORTE |= (1<<PD6);
-
-      //Wait for the SPDR to be filled
-      while(!(SPSR & (1<<SPIF)));
-      //Store the SPDR value
-      spdr_val = SPDR;
-
-      //Once in so very often (1 sec) 
-      if(bare_status & (1<<TEMP_LCD_DISP)){ 
-	 //----------------------------------------------- USART
-	 bluetooth();
-
-	 bare_status &= ~(1<<TEMP_LCD_DISP);
-      }
-
-      //------------------------------------------------ LCD Display Control
-//      //lcd control section for itck 0x5;
-//      static uint8_t lcd_cursor=0;
-//      static uint8_t lcd_idx;
-//      static uint8_t lcd_line = 0;
-//      LCD_PutChar(mega128_temp_str[lcd_cursor]);
-//      if(lcd_cursor == 7){
-//	 lcd_cursor=0;
-//	 LCD_MovCursor(1,0);
-//      }else{
-//	 ++lcd_cursor;
-//      }
-static uint8_t lcd_string[LCD_STR_LENGTH] = LCD_STR;
-      static uint8_t lcd_cursor=0;
-      static uint8_t lcd_idx;
-      static uint8_t lcd_line = 0; 
-      //TODO
-      //if(bare_status & (1<<SOUND_ALARM))
-      if(bare_status & (1<<ARM_ALARM)){
-         bare_status |= 1<<CLR_LCD_DISP;
-         LCD_PutChar(lcd_string[lcd_cursor]);
-         if(lcd_cursor == (LCD_STR_LENGTH-1)){
-            lcd_cursor=0;
-            LCD_MovCursor(1,0);
-         }else{
-            ++lcd_cursor;
-         }    
-      }else{
-
-            if(bare_status & (1<<CLR_LCD_DISP)){
-            LCD_Clr();
-            bare_status &= ~(1<<CLR_LCD_DISP);
-            }
-}
-
-
-
-
-   }//while
-   return 0;
-}//main
+U2FsdGVkX19HozaXcbSn1A16giYLZ1jCzmkF2ITOPtHokS52w8IaXMWDNbAGDw8O
+02Rb92IAyZfcYkaT4OEFw3o43kPwkC7rqcKTWlptFn9EchEDZLQYNy87CWx1u4AD
+V9D41ZYe46fnt1i26GqtG3m/WitoP1oYhX2slns+Qxh4lVepFHF0hq5yahQZQ0NC
+hQk2QKqYxrR92ma0dd4cqL7k5s4fVV/3MTK42ObO/YupTqfU/X6I4IPlAANZO83c
+eFlwIuL3zx83iy4lsvsCHCQT/gHwiXyBfJcecsievxEqbDUhuewOswvtnf5rRMcG
+H0x0k4A6etHLjvMXUrjJ3V8eGYVVtd0uKyJ3kdwSENpsc2+iPUl6p0NGJAcoW4e5
+GvuyW74VTMR68zajcqn5HHgZ1UwE/j7tYggSs6NYTA5YEzr2dZPYGVmB9U+nclYg
+IRPChofts6lHEo8wyg4EpkAz55I6U4gnjDDLCHKJs7vFsLK7c3pACvWm2z0tgG5d
+ofPv+IhBi2cSvkS4po3mkNcoENDuptzEPWscNLhH4MhOmmq7YkYVj2phw0PlG7DF
+jWdC7XaB3F4EPhVMJ1HwfMwdA8b/VvF0w0ebh5ZAY6c26KxV2e0vVbfCtvyUS2ng
+RhlSRuSIPbPAVGEs8Z2p+goiz2lZYviSlWDOW44n4iYlKaURRuyst0NFjP4/ag8R
+qVOBNJob1WNLYvFyWhg5VB85JWcalkUuPOoWDk87qqTv2IRlNJ+sclqe1boyOt0T
+GR6SWNyFkFrjYuc71V6ulcdoxwqBKwjQLQhe0bdmsS/q7LlHScteNZc8mRqPJMDI
+Vxrjj1x6ToAhg5VFZ9Uf4DSEzBcYlg89dh4OhwnTL13O608i08S3LUU+WRTR2GfJ
+6HgqrXjwIADtldfudmiXWA8kVVp0co5nuqEww6YKd7RF+lKwQSL+qDRMqFK83g0T
+ATq+WMSD/QEvhv3/3Rea+kYifKW/LJciOCn4G13UxO2Vfb24+ICXoNsR1GmG7gGd
+dLZA3BcpVkQfMMeGjyTUfytt7tTd18VJOXB9f+D/wcqts8sZg6EHNe1fBzmOrfz9
+HWeYWB0G7QN+23Q+ALh4B3NWstOfD5zlgqcf4MDy+OrBMyUMA9uju0Unb+ZeZ+od
+FOZz3IP9vwz6Z+/kG0QBX6SdPHmDHiA4ed+MmgCa8adw5BTY6xWDwkEvnq+YqRMH
+urLlLnG4T52BQeEQTSQaAJBn+4U2RiJHmvMJV5LuwU0EzHQmmk9u47jBgqVHjI0u
+26NAVFEgBKWj+OtY01Z71lCF1pfV2Bm7s/jx2Y/a2ElDW6wVv/sla8tco9PCUH+T
+MbAt69EA204xfXsik9fqnaE8wLk8LTfpTcAqx8/dqjNpBLutjVFhwR2ZbjURtM58
+MCp1OIDyB7lrxsEK9qWBk5xvUNdXzdEYNguvtBgdGb5C4oWhglZ8BvNm/ek00g7T
+ntoDnOAlns1VrNQsO9dxw9jmB87XY5u6+aoTZ0Mk57YSqmN6G7NcDtqlJLRrveuK
+YyVklB9JDWSnZloUDvYR0eF1IWhneGaUyWYvJ8JiaWOESWECXE7E8TuRqH5eF6N9
+zPMcCo6PnCLyr/raI63uklhnhlEO4Gr62e75tY46ucAhbnoWj5FcR+tShtC25QXE
+5nD3RZP/2kvcZ3qZQo2/EpJY8mr0lxP1etdfDw+pVyGlUAApEnxtf7pKd2+WCduX
+LRNOJKU+1vbsf8YguwTlX/lYAuFpKgWIZjkCTfBwv2m7nVolsjzerSWExE0GwIp+
+z2DQJhI+TLPGqBexrDw2UyCMIeUy8viUlTxQzFSgbD7u3nxOTPNdDiNLhv/HuF0r
+YdkMz/LzOUXrAKeGHKLGnfEzNkNUAaVd8pjipxaEd7Wca9DQqoezP4oeqO5pJ5td
+lqzVLoeloDwF37M8MWRFE4aUYWBOR3nKVhummTMvs239tRR/unZVNJwQ5QD6gGXH
+uHfjRBzt14iFsLx4Cng5o1SMKjpPBwjYA5ImYEN/pLjh5KuXBwQ14rr7ziZeDZo+
+7kyvRAnVU5YasgW++Oz5NOzxKvRxWvVgn/43X8p14YGqMmxcHVuzj9kYQLCVdDC3
++YWs0rHNtqV9mw7m8SkQnKCH/GxujDar5cvbJrzFMZ17XZyOFOxPC9OvPRQAa+Ce
+aSIO2K8nQg/rncY1HLzRRGIPaIsMB51nQFegwhudQh84UIBffykNW2KHETamV/UH
+TNV8W6jbJPO88eqCtJcoknkYAzXUYu+wv5SY7I/HiKcHAzvDr3F5zzqcHAqAMlsW
+9E8k9f2feSE/Hk9RHQVs+V5YSAnJ7gWfnYBWv5rfKffVmji2QQFdf1LCiAjIyEcc
+h7BVxIgHQC3R13a2R0/cnLDefJZlIaqqx+txedQ9gdbYms4CbqKC+t4EF5Zo66V+
+RBrLt4Ve5gje5uKy6MeS3PU0ege78oDnrlyVl6X2xzn4tIcmWArUzsaZAQyO4fXE
+1ycI1/B1R91FeReXn8zE/YHQKFqoCOwolU4X4cxryGRmA09uLDXvk/RQd/Ye6T5t
+25T6LMyE/KAEwZiKk8kMax7Ipn5kFX9YCkppGCbnhQQaToygYaR9y5/voMKoaEc9
+V39jkjoBAgFhSQMUKC7zjy6dMzDbZCXJIDgyWGuqYRkvMa8n+TvIaPLVwAu0MWzo
+hBQI4Wy16zzZLWw7beTWi48V6ruWeYkbH3uGCaahTAgV9sp3f/XXzyMkK10sMxQ/
+/cQH1XKkkn1KkbRBB5q1z/er49Yt3NmIcfLxKFnolxGsaiLTuKFm+aFqUgW3NNZ4
+sty7oG+O/zyMl25ZQi0wPJQpdAPACRriNAQaNrHcK2EiTIIVFJ+nw+d6CAGkp7YO
+yIibXGpZJovS0Rcxx2soVnELTLyObRbfUhu+pwrWGVlmhHE3MKGuKwmH4Om+g8QK
+/m5n7r0SkukJemwvGLsF05KrbcdvT6JWGIHjlN47ZW1kB3k7eHP5O5fUbgU4jMJo
+tmFExLbL8R2B9PBLeD4aFWJBfO//fM9Mx0mfZyEWqaNjUzP+nIF3PWmDI4LcmmxT
+CAon5r8pnciWi24MKCpr32b/8096mUFnyhXC2MBMdzcRHeLrkabEVzeskj5pL8/k
+H9etgfvYzs+JAi0Y3UTOWlSw3f87wNWRCJd5xgpV6zHiWhiZYkfDbAiPXXnY5fqe
+dOj+h00+kBMq5J6ziGQyPR9SYXFYHbhGj4KvZhnDw11xJweRo8lWLx0ENuW6jZ/F
+PGLICrS2YxkYKuXMS1UAeqaT9SkgNK6NP3sm7z3C//viYXGpMeiaGXuZeqtTHQMs
+AVHTyITGj4Hif9cA4ByCGRLKcFfTclBA4bNSoTTnc36AaTjmEbBWCcpU4TMdJyYf
+gfFx6autwkgxIzQsY17XdJf1XsAyuf59VLalUQDkLShGrnJPQrBsnK6ourtLX/SG
+7rCNZyrpQt+lPQWn/MeSSre8FnqXAkBTNjcsS/hsJRrNj1kCQb6ERIoR2cx5/Ngj
+dx9ZjrZzruTrZF+WU2VcpSTgbXCY+mo6UOb6kYJRyG/6swzdqaQDvW2QO0GK9/Ff
+1XZVqYbhHanBcHzDNxG4kr40uDFN1Bi1Chb52Tjj9awOKIU6UnBhgP2l3B4teLvl
+cv7cyTrXIYEaXxBrsoIAQbiLppW00fLAN6HKKQnF8qA7ZsYXG41Luq/x8Z/V0F8K
++x+D1/d7oL6AFcKDcWCpiN4RBmfd8TnrjrA/27bm5V/46dqoPEYnU76dCrLf9soK
+iILducIg9J5tdYCRWpK282ZSC62Nemf5m5tppkSOvcKXXoSjvolVVkLqnNPLUGi2
+sMWoLqZQ3aMnCDwRAm/JLaec3C82d0iBI7bN/BUDrxhYOQtYJc6+TI3KVAJuHSl6
+qPqVy+aO8VH2RuOur4i0TO6q9wpOuvEWDIn2M71BMZ+EGiAGak7Vjl2nUtJeZInK
+Ely4bN6Kx4H1MXMs8z0X3Oe0jRZ/q5CbebzCrWHF8CrNCMA5+PneEmXWVXn60RXD
+yJchPof9vC6RmzesUy66oP8x8xxniLDOipCzm9k0quhU5z4EmKp3/bbfgvi+SG0s
+BtZk9lDCt2Fm3ezcIzj2IEZjdQ8UdMbLw28Gh676yK7j0LRwW2YavR39K2RQ4aDI
+t7zP6z8d3Rxh8B6fD9q/9enrgRNsa2FSAjyCUtYALx3f/lCbEdhy5Q5DLt1DZiq2
++fAHLPGWZdJ2iRgRztsdMs8nJeGvX8z0WJRwOcCv+MYAmeAdohk2XzFXbBMb+Xza
+9MV9+33kuzp+l1KAJStqS/Vd84VCak2Jnrfff2g9mD8MX3KMUqOyGV7PESGrkuVt
+UrtOmoJoJzZ480gOYL2qmwMjVDxd5g7Zc+v3dyCpz8a2iDXU9ECJW1qLIPxTOLCx
+C1BRHADz2PAAUtpScNnHIGFZTj7Mz1ZxHxPhC/JiBtAkf2QlQnDuhPF5hdQAD+uV
+zIKvRn/6gjPJKGlH3vKU3Cnh/9dZd/USh+/WpbY683y8nrIcZpUPUIBobJhqg5LC
+AURbW4sCG5Xt7QBeVefuAxQmUUlAVky2UfrDDAAnYiiWJ/DgRJ4oq9sLbN3cmesw
+DboJHDPZVXisk9VRInGGSW/7Gf1NKS7Rs3iw+OEPDx6CS/KS9uVswuD8HhV+g75K
+mrEIb5TkC87qjLyKaKb9cd+Kd9cil63dBeNz/Cu6jG+qqvshfhb/K6lq7Sl7KTDp
+AHwmuvpeHMcr73wvaJl50ZVFXEWJOQ1acYx5BJndRmW95L8A5SLUWv1trggIny+7
+ESzGTv7gkSGElFjnVZTJq6ZOO+VQOOKaIqrmKOwS79DaC6v1lYp6wjYr1CMthrR7
+K4xE04atHiz+KC6MoOXSwm4eJXDU+oqXixwS+r2xvr1maJmLCrWKgvPBbbyn0Cic
+1WLLNcfkbnnsh/fU06KjAYmr2h+xDIpXkaitD+036F/fRZ/iujAtnrk6kcPoSeJ/
+0JY5EC6hZS5WadSX9WVxwlPDAkuK3HdN+3BpTNfT+1Hsvgc6Hfh2P59GyN0AMp2q
+XYbDsRwgJvCj1uJ9zdKPdI/DTBSyRnLlXwWVWjz4C3gOUXf8Z/ZH6HHVtwm9GD7+
+8wO0vXzlyhovKMSN2f9GhMMJjFUnzw0BZXq9a6h1dcwn9b5SU+RRqMG/65YeAWPc
+w9mllOrr2Q9BwYdTtZSBNEni3hZahxts//OHMSmiDJ+KGyu0sXHrEw9RVwmWfmL2
+MEQfKXUkEEc7kJw5ypI/yRkGQN9sWvd1w0uz+Q9vFGslLwFPwSRnz0u1rAZD41Ye
+ZCb6i82UL8rzOF9+X2xhvyJKpGUdksPupXk8i0lHvk2NA4MX0h3b6ooY2wFtFT7p
+emkgEfsN9hQReLQidbD2iFEzcr/7t4Sp6LJG9gjIl6/POxjS2UJCKZv8O1+9+b2X
+0EA71gYsbisj9Jd8Zml/2UdgcrjhAb+HVikT/NwCN5H22aY117VhYdl5w+pm88sQ
+ZcqVjphZ9AJ7n/5NneRdubbCd8SynhPlBypAY9krYnDyDohs+EbTJkd32lNCQakK
+lv0ON6m+OSObN83kbTqCQzK9mhNk8EokEHJ+fPgW/zFJcylgAD2eOt402tiT63UG
+MzIuh5n3g0tDeDKIyCiqqL4zxqv3l0l331l5RG1GamDPkkP3oGgRbq7w2hb+0/LK
+kOc0HDtzd1zcE8MbOHzmK+ghkXLQSaehJ3IOp2DpHk1YuBJUrX/XrgK1x7kKoERW
+B/v2ge8PmMSXNlYq2RodXgOdbUffgODyTLDqaNGNEdGHH+6LvtT02AalO5P+K5sj
+PdBdHSkH9XEoMVdPaG6yiOcksp0WFe9yDSYCiU5XTx0V0AztYxmrZxFp9AsYBppo
+XJm7NEfYo/YPupkWOcIswwbq6HQVTZOfIao6b+nU6pIeEgrYIzagAUbYp5GSyBUL
+eAoMXxJPzmqISvK66T9ntXcieNwLosGpIW89T5Gv4A64kyWGPKe+FaiKDqxjF6to
+hjvfrfa8K4SAx1US22GhqarvOLRZTd52hli/wU/2NmuYzs3YtsDbuITjxFx9v1yN
+qI/dQmCRp5XiL/b6aBE33HE83kB5oAQf7v5z02TBQQlAi77+WwMStQt9SRMKZ5m0
+T1xXbvvg+cImvnaYvNGf29RrJRcLgFpVmXgykdurt2fC9kK5g3Ti8KCK9CwK0pQL
+KQhrKIooFlQpSuvLsWHEQOGLPNDEXVFjZ9s2+xhZ4bKAYdaQDcq5xoeauogh2NxE
+I2EOaFJEdUiSqymlVlBVj88BAQzhk3AO64uIpEaXGnv37bAblfMftjSGWVM1YdJm
+x6b/5J0jIMTCEejnrPuVZqmofwR1W4HQytkfWvNlzZEyLeV/ZDeq65m19Ew7Va5I
+T3avY34vY+glJ2MM5c6BRPPaT6ifp4PTc1DG9NOGfcRSkEFYWujXP9ToxAnZIl1Q
+qfoqPX2dgfjKHn72NEahQ2YghrCLQbByHfENSHhOi1TCnpyDSy3rvQmtyNOMxRNv
+CpGDDqKuVXUEj2U4czbc7yDPz3roAhQSIjaxB+WwGvUq+4UqGsJUcQkwSQoHuNgy
+r2GPD0Z9BXqMwsozf0SY/3dMe3eySwkBIrnDZ0jIv9BQE5x9+ZexmuXclngLOEui
+uuaTMZfQWxEbCJLEk+01wUisxbtU+yXkVo9WySm/nC+3SHFoOdEpjnkfy+hSCH65
+IsoBljC0xQ9l4rJci69eAkoQaSwwdaXMEjo3k4lTagJ7n+fujG5n6C55rvYKcrKp
+Q2nWDgJYeJG5r4826GujZPnXx3uOW4zsHKs5JYAXGa0Ijj9JSM3L5gcgHwPsgkP6
+qY3Y35meU3KQPOLg32K/NZ5W/DPoAl0Fdx/xsez8kQkJ0vzsySAdVRIq7VXTPFuU
+pyyFaehVuAZL2+VqdRRZ/Dh2/X6gVGnGcbyXub+dEgwzkYcGL79INGN0jvzVKwWG
+hjOjPPfyWZvND9ed8VnS9ebchUqw1uHqqJFg2ty2HubVaU779brPJ9lynPzT88CD
+vkZd1JmwPM+/VRAH+N7eBIa3LMTMSrhMKHYDHxb7VDxnNNAydJlAFIBDaVWp+AOz
+nycxde4OMQRxDMKQa4JBu0CfTgfIS74hQQJW49Uk6w7fZlGHJ9XEj5/NZO/GT7SD
+uTJ84dcGS4PM9hR+90ZsLZG86NKtO8onec3wBXj/q/3HjYah/y/gqEbRP9/QogVQ
+dWuAksiY6l0EfTnMbxZf5sXiwAowoY/oJnK6RNbQD5htPXIY5O0XBr0K8RFYpj9U
+N2aq/6OdpU6zahQDZewz/zigcCF3XA99lta3Qm5pGljwqsqGYTUT3+YHv7OgWjiH
+U2bFVtWhemALW6Rnrq3CTTHeS0SfZtpin7Rve7cG4RSAjUVONhus9I7lrVK8mpDz
+JMGFXrpyYJ4A7RS40qAYtEyXS1WEGqeSPA9qJ7XyMq0RaViTtUDe5Af96GDlm1di
+uKAVzdL+2PMJE4uoh4+OpnHg5m/NqWgAZX90kNTvei0WiRd/PSswOWykAZylu865
+Du3qZlOnZiI6wrpvgljYQSvzNyS8UTKhLE7dlE8lc6GtU3okizh1/jePN4mI0pLl
+TdF2VyvSkMZGDivHgsHdabYeghL4EqD7jyOdlsBCdl9TNj/7oFN1CcLn3qD3MRks
+42eyWOf3vW5a/pTtxQvVx5pxoqX9NX+lJPAxXVRKmxRUZyOh6rAj1MkooaT4vA3f
+QUyVskaFC4BrzQUyjVknrXtp4EKAfIT/NP4B6svtmzwHDQaMdv2m+IuZO4WRffxq
+Nj/wlENp1kiELT1DvZf1vxn5wvkWgGYLnctjfHvklo7UkCMQVPv6/06xAQ+5ddut
+vM5dn9a0rfRLtQ5EdVHgHvhLR0TSSqOxrU4wA+Q9yzfCvd/x/UPiZsJX09i1axb7
+26uE3db3BwJKy5yeXDVrvLahc9UHOUHQEp00ayzZqsdJvijbp+9+OoEq98gDTtwV
+oo6Y2+6dqhhcf/iHflV5vb3VhM1m8gM0u3eD89DNQW9wSNZZHx/j9Mq37Qtvry56
+asFn+3eU2/8a3yHw+NkgyXBso4Csahuz0//ahOd7Nt31NG+ABABJnI3afx4mclFi
+UNEWxfGPt45xgxDFeY3sa0kAJYdbF7XHBwpkq0zbWsZ9eM/pXjjwlmPRFS+JXlUl
+jM8v1r0Hbfh66kphg7Jj/12hmJx9JhpNesdeGK8kr5VJm27ZiMxlRgFybex+I6su
+StMOr4O7GiBXUj+LwbkEj5lVZVWTlZH4NZw6pvsRCi7E64xT7tZSUCUknE9NhQdw
+EYAZl35AazSi8XuLQuUscBCH5HvtXq43d8UNY6ss71b9/hCi7OFpCu3LIXWogahg
+GY/RKQ5L8vNPHDmqpElUPDOoqE6wKIQrqvKnwBze1pLGGJqRZJbHr3z8j4Nv5YrO
+Njvn7ohf3cAxRynbwb3MNZzcWwJNRnss2tmbK51b8uqZU/VvDy+Y2KNm4OcbO2/C
+nMCoJITuzKxP3zpFJlPtU2iHmeC3w5xUPoufcZyINPiAHwlLMc+hmTGCJr6NOmol
+GskcyPM4oekGTMgMNkA9OZ0kwg0dV0vJeS5LZj6xlBlKHC71ZyTe0S9UqPlzJOI1
+4g5gMbbcS01kfc43q3uy9moaFZDSpovgBL/tg5JA1Y70g67W2pC/1B6CEGPA90/8
+xY/YGaeXM9VeuaVfEpI8Ak8hMczs/W/Nv55cox4CY1JcskeRsGY3KOyHMyMvZwOB
+v0ix6g/sdSEIKesTrsykrG+wdnbErocNYj0JiQ12Xbc69mCuvvVVF3nsb35BNB5i
+xU83FCewqTDWoL/r11yDTDCahKyIty4MJya6rre+MlOMDVSKjd3GVYpxS/lRVGHL
+Ukvtg+aHq1XtSYvY9KZzL0+oANxdRre5GFiSdm0uE1YY3xd++22bdy0gHpT81u+k
+Gpd2PqTJ/XA/owkh0Aj4FMtuGRsLDNORp+IZdj81h1rrLDOP1T5P2D4T1haD9aZJ
+R3TRgNfX7GlH6huwlmb5jnvQH9nb2dm5pLZW/J6at6SH+D2/PcgV2F1Ytkfg3lQw
+pbNi+SCfoHwjK/pRAL5KBYsq9rzfAswTgMG640py3a3NVwv7NdcLM5ntR+EN5DUK
+jnAN/JgJIFtoQdBbrCqafb6pZEg+shl9jTWIfZL5v8FwMWUxoHOElYrt3AQh4Hed
+crNlnHwXjeoVfnVR1sCcrWY47Rzg9JEoVaU/VlSlHNthUABUdljgX5KIpWTud4hj
+hAZqF+zLT/ibhvQvQWajt0SEluF91Wejn5XglVUOZfPUvX99s/eQwA61estoNL0p
+84/nuRMDDBz1YLHtfHJmjZgbNFHZmCmf+HOtXCuXWkEhRZYmoIM04vxkjp0VXGL4
+MYnDvxzSbxw/+zr2KgmluJUg2ZiEnd12yJpzZfdsV7qcAfZZ9/ZBY0WiRk6oDq7j
+SpfEEwcd8u/Nn446fnpr2GcMRZq0KJhFFt9uITt29hy/gf8B/fYwGWhAdTkSdmw/
+mHzGf9mH+ODILgUpQC4o4VyRJp101IMNue/rJ/RdRZD60EMU3YbdMo8/Paf0IIbl
+zIvzR80Kf6VxzlTVV7DvJpC5eYx01WA9l3Jotve383KZSyUn5ut/b5AEtYKeMFFN
+VNXEnLT+Eu9CkLDQDnY2m6+0CDXVce3kKcbbU/0W1sQK+TlIfcQF2wig4HoPyd3B
+DGlOGP3TwYu0+IEU4BCdxAUsKybzHZ2DNAXejkvR2tY/X/ipWyhA+WcZDJbGw9kW
+ACimbh46EIelKapAt+TEhVLxO5kCDCGrPunOpPCQbtDv1EgOZi38j2D0MOMVdaou
+M2KWB5PTUHLmvbpwbVjpzQ87STlIMWtE5wf+fn+1O7Y5w9tbIepbnj9hBuYlTaPm
+WOOVuJS0cyHL8267/NuUYjPE0Dc/UA9FCPkeJLjuZ6HhSKxPTSMMbJFXeDswidCV
+3as1F/ul58QUR8F7pr3+T11+6FHdFvkrRxwAKvEZP/ouqRZZzy3CYvVWjcSybSUf
+sPn0ee3yHf3t5BbH2w2G/6m0qQmZz2m6OiTRXYwXwzvkxZnjBk9u5Ad08e1ri4Xp
+3jgARnV8QBmwZyKvfZpsP6MM8vTpKGpOqV6SNIxjl0tLKjHvUOl0Ajl82cdmEJmU
+eUOLjt9VfM6X/KqwlLGUmB01twPJDIdnJkqw1zyhJHfOd73WgbA4NX2PIr9h1JYn
+bOUasdWydQ79PzTXPiwG63fXp1yKWqdPTGavuWRF6VoKss3BKRO9XyXJvXH1/B7b
+zFIVS9kHc92nYWoWOcjTtgDmb6T87O/t3RkclgDMT/t0IdsFRTbAn1RnkcQBRc9r
+LvaQy1FMiY3cLRxQGgsGEvMbmlA2WD4nz5AlxkF1K17AU7jEhMXXE+tZa5l0A/vO
+Krjsangbvog/0vifDStnCNtjcpn64grCXU7JWsLGY9okIx6qezBAgtIgfVl3suU3
+oSIANnn0TEiXIz94AFeEkR/z9ec/pM1BKQTJWsSGWPrdW5C8suB2nFzSwOOR0tkU
+e+gYcQuWz82hTkTl2BtEszuu5PtwoPLFVi9tB3mKXJaI0Sh5yrIWe1N0UUY0PKKy
+soOfmBmmTYSoSGFUsC6gPg95MmT1axZdLT9K9T7DrC3ax7a77kNYHgSds5gdt9XU
+IAC70mqjL4kMo5e78GM/2HF2CN8leoLSZkv0yR57po3g5QF1SGRLGX28hOwh8vDz
+Fsgk+98FLApBlDCTeHxcWYSUV2YGKHEIL/Bd7pV6sGpd0GkxDU9zW4ZjUTIbwcHA
+CoTDuLCAfnXU/i13syx52Id4wEV5r1ssL9VDsRV2u/TFDBF+YpBNOAdJTO3SweGJ
+a6rz+fca/ydMP/K5QvGkKcpXhMPvyoTwxa9UkVpQgV20yKPucRRxweoMRFOZwiIt
+ufneNfjQMVKsVWIxs6LJ+zkGaOpoRyn++eB2RfvTkoBMVCCLmuFZ+askVSGqE5my
+248yMio1j2A6iWRUxvE5pViPRgaaLxIGCfIOfImUEZRP9WxJjO9Hfe6j9f4O6nyv
+MVzVFYNhvkCiKQxWjCrFIs/yywSqsH7Z0o31ZwkxyW5t07rNzqgwium7Wf9fI2Ai
+Nqu/BgmzklBfF7ij0Rdiwm5iH1VoEff2Pql2BoWafV/9gNWmeE8dcf+3gMLvgRCs
+XK1tKQgCdWtGoTzJsDcH94BWQVqAxV02iEvDtecsPkYSQ5bZMMfr6EsvLe1GHOv4
+Mh61TVbR3RP/AAGpYu0a3dbTZMoNDRqbkYmDcntoJe2hPq6T5+lDbWOaHaWKEFYa
+KtgV7d/78Y9/K9ox69dDW8Gsh1k7JWtCLsjK9uGKv6hPi9wm07SVxlCAYr7+loGz
+VQUWx7hFtS9HjymASjXStT38ktoGmH7LL9KxeWZ5wLqA04gig93rjPJRB4vr/TLT
+dOeM53SI3OdEbWR5WoDDQEGdLRs/lx5xTXnyBSmuOzxhw9dVR3dXvKoScywpDF2G
+p5yjERLzcZ5moKT2urjXtzB3DKgbW6rm7OEBYblRJBTW96fu2mo9PkJhRlsdWV6T
+kuEC9eH8rXIgCk+7a7ApqwuJT+CZ5R5ZZazilx7gXFCZ7C4vG4CxtbJY5HpUI9u1
+33nRx61StqWlmI34jxFxJy6EUP2coPkLcjJzYA495Cloi/xcFF4hq5IHFpnhgVWT
+hbpnh24FuiEJzFLXwGeLmt7fudgyzHuNLe75yfRhCJRtaqxzJziI4RP4/Cni5JfB
+WKMIEE+jK79/ttUohTIXc48YpqCD5GDSwC2MdlKQzuWfLh0fhhm6SlZ3sYM3Q1QZ
+GMGKqUo9cGuy5VgGinRO8UfrGkDTDzrijzsaypVURjS+HwtR0oJ0NKCjFJffwE/e
+c6e50K8H4SqfjCQncSF0eoaryWhs92Y8rzz+VovL9yiTnohlASG5wbnibmA7K/Qm
+/mD+aGkbBF1USJdsB1QFN/d2O/aqO4e3ZVwP5mKgX4/oQz69wlZwNZKMf6TY+/8C
+PT+WQDlebrp8V7tFvZyn9J619fPTq70fDyPyPvhblKJUEyylckG66+SfaL8a4COL
+FPh2Of0yYojwkXGqPVaUVHYUD2B+pwkgGLK7Bdj27wc4XuCt1m3b9UJEMShyhsnO
+3/gz0zoslPLvouz4p7s16wgbRNf45BlyO5Yg4eczT6CxpBbm4xfcAn+XJa99GfG9
+sEd9VtiuE794uAbz8lf52HcpHdwCo2ElUuZNx7jAuT/U3ucbBq+d4omD4O5FGIv1
+7LaGMvmXFu0YYjFiQ5rT5KXm3Hp8oRVEjzFmfrLSTtrQp9GIc82mjmFOJPdGr/oV
+dTBCJiMW7v7JdCNf5Vti0KsEB/8tQ74aZeCUCr+9znrkSRNAbRlm7L5wWho1ip9T
+cntZUw/3haHQhrRTCLSm4bw/PkEJR/T7DyWXqqGkuEuYCQZ1Jncqs5g87yZT+5Nv
+mgSWlEEYByvV6PJ4t+l+vpsvBK1wi+PDGGeoDk5TGSFJV+dskPLVw8Be7LJnlDl4
+DK+JWlAGbvBXUCOlYloXBDKq4Qmoh6k7TmsfQvg+9AJfaV+3GfqCm/qh62hnD/vf
+z3Z+a8UeGcTgKL/D9KlA6ND85Trd41aWWGOqB2Sq7n7l+TfO/QrQUQ2tq49sajUa
+BA0Z7LI9d/Dmumlo6evY1K4zxBXM46bFmE3fh7+W66bdm2Us6ZekkbLLNFT7Iy5d
+a2ZOkXCJ5jvZ9ogglg7qwjaHvPf6/v4RyN2JgVDedEJHP6DtoJAmRS4D7hiUEBYg
+B2WETWXA5QRH/a7rGL53yZlTrpUyYzTXrl5pvCFdpfOzntnIxzxFxso31yF/W9az
+46UFi5eRNc/Iiefd5htG5pGxxYwxicZs/wMO6MznIWff0gaUNlSq99GxyCdBQVJK
+XxzISKh+ZvURG00pwLNA9hiFBWJinjCH7DSaXkUQIx8LGCz3/zWpo9OVQzroXEFw
+sGzlej3rTrbSQvraUmVUeaXaVvlIMiBs31xcarqecIVvan8L2Xp4IKGiwtk1L792
+NhxuqfmPCoYiyUGHypKNJb0gGKfr2LLGjImibLsxQh7JdgVpDTHYGQwYFxdAhmFB
+NtKSDT+/MnfFiJCFejPRRTfFzuaMO3vDJB8SGfYmC9rKILPrx84QNs5e6uiEzkr6
+wnG9KdUDNOj8Ebvt7tXL1Yh9YWpTVxvi+DIe8U/rbK9VvwrvQjq4BCh5vuK+sKFt
+iurU+FziuTOTvpy2DqocTJY0ij+f9J42ETvdxMn7Svr9NlvY/KQ7ulpDkNBwWQ1M
+pbeNpKLqXoO3TKEgWEbA+m8ioluanmy/9i7fw2W8FDuOJzrNZ2gbTprkHhCt6O1L
+XAJO+CZmF/wa78ntLPsiFpC4m8CqQzzK+sjkrt1ISXMqASySValrvwWkI1RWoatJ
+HDIGdudSqrfVM7kFtzWfah2HCStpGXrF8bgYIRKbUD1FMrAdgEcam94RMWUSv4jY
+WNjzQxXjuVWb5JFdeXae0JUZ01xIHz6JpI1hvTH/qY5syO+LmOQ+MvliL+nhruBe
+iMh9CIcskfO9VciOmC0ioXZHo5l1akhHxHqyMew6F5V/oJB7wt8+bv9/RFHqXIUA
+cBLid8HqZ3jDFkaZhWxr0C6pjsl34HgXvYo2yTWpYOUMRZ7mjrxwoN/6gGl4dkIy
+qRgbd1fqX/x3Ew21yaArm4C4GweYAK8W0jPO+WBVRmXLJo5aRK/V8QwXyQQteemx
+DA9o5ta5LuJXqkX7GXJPMV6sZiKwVSg4yiP0VkYftvjQmbsw1rsShzrpGbtJVc1G
+oePZMLf4pkyE/tpNM+soSy5hbZU4OCAWlPhgEAV1wtc5G6j2ootKEbpLy+XXzu1m
+p5isWiDqw6RsMozZwY/ky5CWSNR2x9t87Dl4Vjc/qHH8iglnDbjqWU9cHIwfnLSo
+ghTynG5taYMXLW8tKVk8VNBQRUtsh2lGVTSsnkzl7qYzEdxPqB8ljzwlVAhklv4a
+6FM3AYCLnsPhMHHemAfxamDO9V/Zo0/fvO9XfBMeyq2QTlNKjG0bflfMnvpNbXxE
+ApBOnZpt628HMDFkB5ugGnCP9RgO+1aDsOPntpiDm1TqD1uRT8X+X4bCM+6IjjE4
+H2wwgonALJXyyjz1jAaO1guKU/WVApIFpWvxtvLLqHE2kcxy8vYT357GQ16FzqS9
+QZDWW8MR+787wx1Pi1tV6IuY/xeYLsMt1nzdvok7YXOWBrgZNG92dYPvzehWWQf8
+/V4FOHE+xx3ogcXlNpwTJQSHuAmqgB82tSBvtl9fANy5YBDtuSL4sxN8cnPsQhRl
+cE1FG5d/XNJoCQgQIwBcDANFujK5m0H7WSk9gcPPnUkasTtN0w1cBBu0A8kkfxmN
+m/On3F4R+FCdfE5nab6ESKE08b4Xd7EcArr6gPvZMS5NC5egpvucqAqjexrhCgNW
+x5KunYP3O+vUu1xSUN5PbOPiPiGg+VnN8zEZB3OJwkf6EXPsCvpezcTSY/kna+SP
+0plOaUiKcAfitB1C6MWCMPvqnj8gKObDXo6vyKudOcGPLJ1yWp9hTz5wAKM5G39x
+20HrYZ8JO2SJcINgWiRYTyF1EWry/o2vT4yNtgYfc4QU1PtSa1ZYT+p+qTdyxk68
+9GuUkO0z77hdgOlWeIQk763Jaql7wA830wt39NYVAIVFEnBdfnCQZTaXyMfrWI3l
+fM6bvlYvbsM0ghZcUd79ZYTcdWM+PtD+dYzfeHJzs/0z3tqVbtns4DTGJHfM78La
+e+W3HzlyTpdjl/3mGPvbB8Z2TSFLLjVm2sit0gHYnL4IYNGFOoIbfQOOVsoC8z52
+PvNXIXAWkNXyMx6ngYMniu0Kkju/ZqeCVmNjYtkWDLDrpg4dtQr/rKkzSOdE3Pmo
+T9NFQsLoC1qBH0tvulqTVtQ2SWsUy8XjVPJHeYELoAhi6/VN1HBuGBFPUi6ROXqO
+cVuSmHAugY/ZdFxuNiJ2TCRPNA0SY9ZxhvvDS8nYrAVntxrD7Rx9pr39ct51IbZV
+lEynjSj1eeHNNzO38GSxy4xhJ1O/5xsIRAl60dugeYbxgGWfCIWWZ50DJJWSMBZN
+CqocAYNfVfoLWfN2NSdzQxg2UYg7acJJaQ6LRZtC59HJt56KHkfpdHErVSs+pTJW
+pZNt/OBcoy+JLOgYfduZZVLtaCbCpkU3dTEMglAP0FLlRwtdkPCIrhMkkZUQQRNb
+Vz8crNz6qqFcyvuiUWQfbezhFjxTAhLY7dCkKQj5KRJBsiz0nUDgg+cebYSuuEqy
+kI+a5OPDrNYVi9GBo4/KHgKCgNsEn+6XH4Bx5+wBM72t4172ryJzx7XM4N3LRznW
+kDH9wmshYRySoH00kHV9TdI07IqOlrdjLK4B8xMXEb/+CHmXonTgEAdC2l3JtdOe
+/ifzVJyTaYKspmbEeCFDlPrhtmWnJV1iztpd+zMlAdauXDdsvRsU0rTiSlN6SmAB
+X4jJG1cTQllgh04KKFmGpNfP/3MKnYuCnKg/pbsdluS6DxwK0Nvi6lctwiHl/6Vx
+3pHMxzWVc+qYqLnFEnau9Xyhi1X7XLn2uJj3PtbOUYtmId1HWYvl8wBm5DFQXAJw
+fCFyc26psj9vl79rgg4SZnh61fkqQsNlBNMj98Yg9p/EF96Sm8Tux0+X15Q2UYgH
+mcaZ2cZR1lmoM3KoeUsqZb+hpqNz0t9HHJKHtWAtxRVw7+5eGtuvrfMa87V9c2Fs
+Wsh4TBLhwjlyQ4NAew8wNrX+SMNmzQ5G5+ZqlGdW07sjakPWkGFXo/DVw7SbIOID
+zXLT7ycpS5WJP0ERCZ4edJ6YT+aP63Rjd64XwuuQIn1AUwC5ALCgcQ+dkEqiCBZ+
+R+n5haGejSBqzjr69P3CKhgw2ywpdgKN7qmw+633g8E70a149hToAzQ4xt1b2/CH
+pXShaO3yCz61snSk4ycLbj94LDZatzqijL4HhdASdB4B8g/GrK95XIGoex0nfElR
+ZRsCyKNNGIz2IfRoF7pbTV699WMaXDrbWulNl0hyH4PCAuykYG1d7dNhYkWOLQgV
+J2XXzgAxXjV+b7EW81svXYkDhtRc0zIhRe01v3fRBPPOwXd9e95+sEm1LYmFidGh
+gqNlEyPlsH5kSS/2up8kjW91C/LRnfPtk9O+ghCGycw8mSI9Rg2OMPWWee1DT5Y9
+9LVBu01IqPbbOcAeFxtKINWzPEflA97HHPicvfC08ce5gP4vHTvjxJJd2uguVJXm
+S8zDgVwqLbrEsa7WZj6Qutb/51uQbC20nDnwrZB3/W/eSnu0cfz8G3zIYLWFrL7c
+yzRFYbKWknTY8y93+jCYdTUOYog0zBntDpMonkxcZLNBnTwD1Eof+AlT34b7LSHD
+egN+Frnk/xoMpL4FXxObdFC8MSFAZVZHaBMMfL5gFza65WtanlM+YKoiLI0k0Ooh
+/RpOUXfdJdHMsEOWrpZi9QSQnHyQtjqlZLIa6uhSF8eGkWnOn9SXketnQlVH1dKa
+hL913f4Q8OulcfSOsj3r6S0jpE4QA7QUnmJUs0E5NGCFBW3StxPXvK6wRIkYdR4I
+aQKfpZqFddG4MABZyJIXBf7gCqmzXYTEkKDh3pTyG4U+p1W5SRlTFnm9vmVkxwoV
+rMyDIpnJdP9oiu6+OoWlYxeKF2fo1PE5NgeGLpeURzpkjufsC7gm5czGxw+KlOmk
+4irHQKjMpTK/GG/m6JrZsxY5N1RsX4Mp9LaxrBxrJOtQxhebW1VtEK0SLiW0o5hc
+CjRuGenOXeAe1WEZL5RNmhD/Ha0Q7KxcjntQb+UiP7UJyPMLhYzE9K0LiBON8I2U
+QKvU39ThSwxDHmKk31zUA3hDmgT/5cgexTg1nuKjXNzwgj9zhIU3O6P7JLYZZ2IF
+26xzXG4ep6qexeLTeSflHRBud0VkSm9MAxX/d/WWa7RrdGaMwkawgUQycFNWJRR6
+835ef5TKC+q4ULryw3Zy+lr17euslJQgYsoMNaITq4sXYe1e8zu4t7UpYIICsNgv
+tFCE6JDSYAGJJRnCsgZA28rWBk7po7mkcMmi1joLqA+UF4Q76Fso5oOJ3Arur7Wz
+L33qYB8XxPMK+fDlLu6uTQiquXihhY8l+yme/Z263LlMwHRiBDEymVIhPw/fCo6T
+6snf0gdqbnRyf2KUWc4ZBeuzs0cvS3bwh8QHZfjo0UgVUA0UOS2pBV6hQeDm3xTf
+tX5UPqSu8mVQNh28MuzzOznQXKjFByztmc0INJngy/o5kMr2BE8l2SF4YLRBax9f
+DI3JN0vAfhlPZZaBDBzY75l+40aXADtXeYKNuzhtBfS8G4PyH0y/BOHpVeR6KVYR
+WLsxQU8DdgqMW4UzNhhOEWL8y2XR/UkMe5JG6X648WlZmj4jMzi5xirK4U93I0y5
+rS37KeXRvPIYYSIDHRSTwy0XiVStGzIGA/IJgzPzGfccd2iOySinB5FEa4aF+u+m
+0w9d2EzUYOO4KeabN2AiCfDea2iHsqT7UUIXnYHJyJ/IKVk3V9lxwMeM64jzXgu8
+kxydg7Jf17O1/mbP4VG//loJH7Z9Q22fVYVX8N5NQZLiVs57OpaV6WrTBmgO7pQm
+mDqKrZpv/Kz1EWkRx/eLZ8ahGqeuuRcjlwYWq1/3Ly3F1ANlJ42xLoQVYKcQJjER
+Cay7v9hVtCQsahbJ9DKjSGey6tWbynDwn1vAb6dL0SNyq4ByACUXTOt5FfiA1rQc
+B21CyrJMfmhca8XS38SJSRUltn3yfVqw/DHdNmH3MK729GVLpt9ZUwyMmQd/vgh4
+qVDciSclPOtVd1CSj2jRUzDNilPbbH4UBJQSPt90kPb97vzIWxc6B3Xv/lrol7xo
+vgtORKsjQvgoeFjmJ+7HsTdo7x597BO5REBQphG/R8hv1tuXwlTvyi+jvKTWhQZE
+G1jE5HGuN4+ZdbgCFRI0JeK3E2TAnPB5zZTaILAbaH1vudvzXcSERzm3sqiBjyfD
+iKIcaFJlHZxrUpH53251UNlUka8Irhhcvwia2pKqFvB71sEYvQt3tENfl7LeZG96
+KgfIW7xT9j1Xb0EloPjiV2dj/krbx7hMadlDiPpWPmO+jcUg5WAp797Zj8tk+N9Z
++v0fmuzjiNiMZCe3FAByERufO3QPkQ3m2ImhEmWm+vvCFhgZi5CgFSQh7ZTpq9i3
+fhriaXchowvNTqp6Wm8PfM156Ij4MnMzzwfTZ5WnE2/a+62r2HBwgj8wHdjXQENk
+vL+naELbl6o1HxUU1/rK0mGSuM92mrj1DbuaxceB7zvG4p1uTbjzgUJltHkOC5BK
+KZxRu7KYe6+LxHjMBLj/RpU9TLSJcupMDzTmFm5imJu8X/9xViT0AafzCHgOKg3w
+lxw3F3y/td/xCYBuZ+Aye+BFqEDT9CbOAri+1RWCTFqRosyWWhmiHacL5P4rp2qS
+ghGGrCk9ypYk8vniGt8wQBLgeYJnJPLEWhPRyG05HpCzi5xO5royz6VlnPz2yg3b
+vBIoWZf8wcMzZNeAsK2CVT9BkWlgmcsyNIE+vokfcc9XTjUNwOn75XOndO0XyQNt
+g476Z+hmYg5Zkvt7jmCLi06Z7+NCsQepdudxy6R+eM2/89Y3aHB3/ZOJWkpXIr09
+awFHmt6Ud/uSW+TNmzNbUeugz2yhLx2uH+CAF1y6ZrJUUema4jAWwrfvQtbwpDW9
+dtT0xP9S15v0Rhj/9EGGzqRQUgCDam7acVNxEmVnZABS+dI55KUkIQBbzuRtWVY+
+oNBLjEY3cVP78dug8e2KuKZ0lb192b5mhLQDtF2YFc1WIV30IGJzcxmXc4ei/6pM
+vjz1G2zwSy1Ue5ItDGqoSzseSk/wbV9e5MajzKFWNezGF3JmeKZKW7o8e+7uFISY
+qWohClTgEwrNo+Fv2im08yupmU6ynekYm9pR3P5aG4XkRmYnCD5V5H7d1zRNEJRA
+M2B+sOpgHGa6HXiLlK9XCEkm+dSKVSdh6EUwVPcydu+VQhADq61fBr8yvxjsEDTh
+wDWw55h93uHnhyOze6MQAqVfWJMG4idXaFIXq0fz6VBj0onc+RuP6RF1j1pA13qe
+qWn8PsW0TkqYuw8mdS5ZZU6NX1dZ/WqkLLbJKHR6UuxojIpOii5fVXnlun+OjiVe
+CdWTJ7S7U9n5HAOwS5sN89gSUd/ZoCQUAZ9UeG8MlUjZFGqPmJOeKYjLGJEzqV2U
+HMqle6/X2vh9WPRRXAP2JL6GmQXXLfCGJ+w9b8QZt9iApdItt3NrKf6GNDZE9ujK
+r38mI+KAwNFpbj5//pwv4diLhzF4YebD9rm5C6a2yyfsCUSkDggHCk97KbPGASEz
+rOmSDLJGnS4LBVYSELGiDYgZRAaKA0+A/0w142gkw2AQ0Qg5RTDfAeWegAJJ/GFX
+u6g8sZBwjIURh6H/HiGrjuPF0QMSI92dvxg3ePuP9UE5IBsGJWrBp7jEJAKYqitp
+E82qNLrmkRMN1kSdNf6qxIe4jb7Qt4Dt9va9LIFENOhENsloEwlLV4PJo+kVs5GF
+8xPCcVwefU4JxueabYWRvBSY9QXmZAPFy9rjMVhbo67Sx5u0CWUopeFXJkGweYZU
+OMK1mFXoS2/bAADKE17p2m4sGVmuQoYaWvFKkfiajYhGdTt36AqL4Smoo03S/mEn
+dAgy/9bh1JcSfgNGwkokRjKX+kKIH4d71L8EU34EyCHMinUXbYckn00TgAZYXJFv
+1iIU/ru4HvLNyx+4xVApITYsLfoflQpHGyaIcB6OPwvJ+e0YGTmU0vEinpTU9hvs
+Yv5jpfRfUnyB5Vj9n1vs2I22fPtVW1+sCT5f/rctwJUZ2OjfGbqYhSCPCzgMOD1x
+r9qL7jPl1j6A7AfNW9FStqwbUyvKnINKE74Ijm7FrLRlSdPxcVF4nDw+P9bcuBLq
++icpz3tK9MHs+J3/vjMFiwHA4PTO/ZRUsnAK1TDuMLc/VGoYFQJeYSabW7eYxtGb
+kljdQEXipO2258ZeZtY0NwFp0aZmzgnU4+Z/jhNOc51hIwubo7y/uWipcEAQMgmN
+/Jsi7UOCWj0fBGktxYnFRY/OvM93mYRYFJUnyoDd5kTPt1b3LtvpbyOHE4QQTimC
+lfbI13xSwbgCJQnD8seFQYdHCfrfgXJnomjkeVwZcWZDJEJ5SNawk3fzJx/iltud
+vbLaDBNo8Asy8dywmWlW6/7d4FyD92+n/+IBfyIonPb79Bz2xujpBP5Barei9Gox
+4NF2lfN0gNLKAaM3WE1ns1tWGuQ1u/bCTQagTVC/91gXTNOUsLOa1Qux+sxufGys
+5KXl7exMydOpK8n2ZLycbPi8s/sWrRqEEgr5nxUyM98CMbS8JTyVNpaw2ya7l7Ir
+AzgB84zuEgcfsSYNvul49+iec/EsKRh9WkxqH4+HDJTyIU+uXYL02hCKWCeohb6n
+h4leR0xe8LREN4vOWDU+YYsoQnlzg6Jm3kpKJDW5OOcsrsBfrJfWrEK//oBLB+VK
++lL4UhYpZnef76a0HpTA1xuKmLxmfnlXQJ1AyAM0tkjmJu66oK0Sp5zAS/w1UfDY
++JT8/wYQZHHPU66YeVs0qCFfiepmcI4NnYIFcuzJWPcCZOKAYWPW/Bi2RXfb6n+I
+/2Op3hTfOtFud8Ah8VCKh+jR+7UMDfiUTIiuDBlbRh+dQyB2sAzafLeMXTj44IOr
+EoX5ajE+CBsr4gFyPsJVcjBh/ICBURT0W6OCda3k8s82K1dDgBAuUAjVJID5fbrA
+r5oR1I9+o+Ky6DmvfpTvMrtQgXw8N1YCdFjk0UCWBVyCCI8ksDX666PreSVW3PzY
+MdmsswI3LpI2jxzqUpuZx7Wu9km+Pd99onX/ha4yEHohfFwi59dGzZmexMe7C8VU
+rOxzbbYBVoHm2Fxcu2i5RJpdr7ugQ5Dyztv7A/mUl5tFYV6mYfuR4P+OYvKfGttO
+dCQzIzLiIiDu1j3k9NTOT1vGH9zV6U+VS0bKeh29k4DEtp/bXaMEwKNoSVkBDafW
+DWzOE4s6S94k43/zsYiIMMOZcrohUu9BWmdpkaD2y/xR8K8x8fcnJ2ENryqiwvVv
+2zKpE31l0KGvlJZzFQYbF57t4ROQMaRzxQBzCpmymKCzJB0aTxh+DVqrwhDVCKOL
+W6pRqSTk9F8z/AQyv3h0hJmvWI8cdNKROSIIHvEHN3HuRu/QmJqW4ngjHGur30+I
+yk90Ps5jchS60qgrRpgrK9js0GGUCTPtUZ8hesbI5bwxOZXEfClk2deqMmbbpbGr
+NLbo4Hq9KJ+blAhe15I+KywndlJccq3hqOU1UZqbxmMRWWfOwVn0uE9C7vH1RdU5
+CIEkB7pBgayfMVAGXzcvffSqH+b/QFgzux5Ug6wMFQCTL84iV/wcbb311gUwLGwX
+RclTv6njItiCcFktqlaX34vDUbgrX2OJ59HXN+wm7ysA/FjWksPeZ8Z74ZsJqnf6
+f1AUEQZ8rsJm8KdChnoF5jzTx5Jk7hBqqyKe++DHiJGNGzYRcJXNnLGsQdH4Ld/j
+YMrLEUShrCUbCYPbJNWj2L7oMKAfnijimdz1+HwYjuqT75j6A5nnYs/v2BOiqgu4
+wO73DzIvbMfxVR5Fm2RdzboKgIpKK5Y50DQIU7zFCVwPX+QpN8vQFEn2V1A1ejxz
+Py8y3oULdmma1xui/wHZKPyxFN45Ck3Y/1cCABAZ8aNEHwUxGrw4KP6ndZ6V8NYs
+10RiM2IBS/vmhTFvum+LZ39CXGnfXzmqrJGfdXsV1YJzHOZPibx8/G1FbYuFdCmt
+SyECBOGmRP3xeTYrbwxBLYv4rknYkYmVslVo8mLRprbpfMe+OtOLeaylAqiemQq9
+oHfl14NDcKgESEw2Wdpe7tgv4L5WyNo4zuPyIFMfbUURlnz6ZdY6edVXOKpkC30c
+PiZWv7888CcoQexQSXlvlDuoVAwWDl6Bxf7SOzg1Ib3h3E3+tvcB+jcQEAc4QgEg
+JQFm97Tw+WiRCZOfZUWrUYEZHcBdw5QWgo6uFWzFfdiziT2mR6QvKmfLyE2UPhc0
+xizi7qqYuOMillJdhVbWmDUtuvABQ8pwIl1dFaWmIy0JBAYRq3uF6MpRQ1Us8xzV
+GHKbndqWA9p1PhIEvQTzyoa+cHLZahepLz5Bzd8/P3sJcrCRMzUlxUm9fTAdx7pB
+jADwApWd6bcfb+5+Y0DJjJkxyYUVG8KT4xc+Nlm+oQO7oqP5v5+T1M0IIlHZIvS8
+ldUHYFybA5UMpyKVQkaMNt3t9WDSiNXSW8SxeulMREOECXOkFO3Yb5g4+bLhBiy2
+baHoqSq0DdjiGTab3Ti1dBtwJzq2P4raJB02+HwwCcn7kK5ltvsLjXoEK8QG4Tvq
+tBpIncfkg9rKnb0qhnEM+QkVGed0ZynjJnYJgA45P50oIBT9L/Z5j5wEfNYIlZX2
+7TTClXcH/0G1uWdwxwf0SdfZDnzC8qFTlwAY0s84SSwP5hKZugzujoQCAfPoWGJ5
+pbPbvLlIR9VpIbIC2hOOg3UHqJyuXKRtcxNr+GdhHkgHR102nyqdz2+CQCk4nKTB
+YSH5zSjEE0HHqIG5VmtU2qq0cncFWi4DzGYYDfqwHwJyHJzVTJYKM6dahaLW9hTA
+p9e5bxtYnJNIZtVQZuaGhECoMle8TKdi4i0ztX4uhtgG0nCj1a8Vf1NWW1xnjPEl
+oZ0HwMi+QT4b1mEppR74bBPOe+CFTA+n5aVbvW36VHbVN/mrrWmmMc+X0gXWHQl/
+sUB9pXi7Q0tICe6kr6bOVROA+xGEp1AdgLt/cgnZU2wP0Goj9max6+MXhVgwcWZU
+x4iCyFCV5EvE/jFG2Y0/SMUU0lDXd5uBhk4eQrYXiJdnkroifoLENVJZT9P3VE0B
+fxUS793GE9HBB9/NaJe2Urpkxa8llqzZqXQcnZNu+O2mPrhw7sFO/YHTjayeoB43
+ZeSn+OUm5PRl5RqiTspKrlB8bbgjS2+jtvWpAvX+tnZohzZwRbIso2iR1xW93zhJ
+LJdC6Kt1VJr+gESOBZMRaF5rrpEHOQeOiCiUBFgojqxjB5KQWwQdbSnSVjjEsFxl
+m9PGzaE5NZstGPPYisu/rw+zQgK1EFwuV2JcRYSkhq0mofWoYPw4CyZqpHWWPieb
+0zNCuSAyoqkRMvCSKAEc1EhSXCjpdUCCwXdF1PEjNzM34bFiuuHxnKIdhD21UFYm
+pl3wEVoU6WKecbsexxvuMcEwOuRP/g9+3hilE8c4iIW0ngOXfquQX5sfmmXAPm+T
+5p05nr0xL/HhDNosDSFG+i8yMinO2lqk/7MOd2biOjXJVmsmDdJIa0MB4dgR9Ka+
+HGDNF2qOftEQ6YyMMiCVbPXIttCaSuFS5wuEKkEuXJSrLLdymyQ2eMqT2St46+IM
+DFI5BhnMyUDsGloNw5y9VC4H+1qNlG5rwF7heEhwk4/GyyEm1eJw5K6wScbKxtnm
+SP02++5gC74lvoI6dbnUifZ5tYZIacFTACOOYp99LIb+rwpWH2NJ3Y4rML0+MZ/E
+sCusbxVLA7qBsRbRmzsi5p00FtqkRlznG6QoqK3e5ZTKN8AlJoA2FO6/cAZpWoVn
+nV8c1d8OJxPP/lkyxSwCq0di7y0I2/RRJkcJ4RExhYcYKyEXSQUWDCaZxleQsjVZ
+Opb4pMcrszM2giNxwG29MeL12n0/26/SvoRZtbmtq2D4VcIMi7dPNUWtoUTqdDiP
+R6bq/IC/ihWGw5VYQeSNMJPIoREiQ9vHQB/qzkYs2ewizuPy5ho8Ms61RSrxtgoJ
+0KHOxxMBcBDGleby36obZH+lmaPBXwS2OJlyVqYXYXO3RDTFcqOt47Y8pN709lqN
+FM8LxcI7P7ysbD8gFkqeTHNhn44Ldo7Yx1fiNH3Uxl0Q7jJUR8YtHng0D1kKh9gH
+1pOI0dOEDmHGKmZch9OPJXI47VcQOPw/NnsRKnS+a/5HtoQpeMIa6xFjgdpmAx8t
+YLX3dKFNK1VE1LIW9ExDv3Ol3mDLl5wrARSiE1VLw9/BU3QMxviBTrGbIBGN5abG
+2BS+AJNh9gLBJOeoKvtgrBOW4M6cNcTOyAXfcV//swGzh0ia87cHrlXXoEUEfzFJ
+XnYDu/r4lJ5MML3EhAgAXKRR6TPGnvUFdjDMYe2Cq9n7aKWAItJPCGQ4O/lzGYRR
+NdK0FZ4SmXHS9YDINrxX3SkferYGlKs8lydU0fFndwbj9tRfY7wta3u8b4M3VUcX
+2fuYmvv4hujQzYNbgbhOL/ZT0Jog9MO5/YgRWWpOMJBKStxtVme3WQp74q9weobr
+4HZ3FtSauNBnTXgFqw9+ptzNSCweFpSB/nH2+3H8MC/PFA6egsic2Yminx6WF1Tb
+Sg27MIhgljONRDB1oVMI0ZKEknkpVZekOm2YvYZ5E/AJagmvUre0lgfUbclvTV6m
+/2WW33ooeCQgO2vczCy2nS5aWTkAr82hQtSauZK5DQgZzhRuGgD9e7bXRMoCLuDC
+wp7dvQxUlbuGrj8RkEmKgnSYA1d/BaMR4+JvJcbHmPbQpAlmV1JEa+h03mdTYZ7V
+1W/JXcMs/DEnXdrB1aDGdIMwnL75cOtTRNLxRmYdwsnJvYBwpNeN3ySBpb+IoKEC
+Ef9w+vBY/xv9+cfp1msJUqLtC2N3LZ3KCdL+zLeLSwx6+KJn1g6Ze0tm2G+ukKTT
++oRDKj+KdvSgEAl8aaNiRIGCkn5NC+b+FkLs9BXecF2aZuhrC348RAHjM1aMwcxW
+e59ggRcNN7tHNa1ohN4FsLo6IFk9NHfb0De96JzQQT0MIt1dR8AhK+xD0B8bikjs
+XpQVsm9X2ER557iu2J20oj1N9IL1k2gsCIGbpjkki3R36sBdMkNmRay1YxkLEtOs
+GuTr9BHJQglXBVqUWJtNwDAgHVDcdAlcLUiDxcrXbtPFUXgbtSZAr56gJa+Ml309
+/1KC6HPZ1MTEgJG4v1l8XHk5Zarie13IkVCWh2yr37V3YNQkyZ9nXsCWLawH+fRJ
+1g40zT9deYWt/hTX0FP5UhHYSyDp+Hdve7GlSN1oCORH+62NKee1UmRBelaFqkYk
+zOV1iPyKk+MAzv8B/ZFLquf8A11KRO2VOu316IxA//la7LqCMCcHpkanS9Nokxz8
+C0fsTQtz0HKYjl5V7LJ6HFqpO8Wy3HjarBcwJoigDMalunN+auP0V71wBqX044Ar
+hOMX30yMu2kNDImcbyWTuL2b4K0mVTC4NJlaBy/j+jClmK5UulZ+VGoj8FmhluoJ
+USs2if6VSg2K8dT9K7HrDmYf7pX2txZjBuc23/CAUvcfalSLOQBJn3ofIN7a+NAj
+/EdhwKBuBHkUPMDLzyYoXFS+Bw+d1emQ0KbiR7gXN9iJFjVXxzuNWa6LKVGCqxLB
+g+b9WBcPJZeK4Eoc46TDPAOnJGvC9JMTkzOHbFINJVxhZf5SFA5yz+TZhvGE54n4
+rJdHx2Fsj2Izz/7WtzA07uiP5Rp3ZWH3lz7XEbaq7UZagl9uDuLczrxKt7UQej1N
+w4XYrkbWenZMOsv2jXBVkpCcE6ijfRaBcINX1EPuxbK5bIybwqwiNIqclS2e+4aE
+UyO2Cpv2CggfFJ2foLzbsmkSldIlw1tJQv0q2DKlxXKMUphukxHyjVHM7Ivxze1L
+tt4QsVe6sKxYx+ZGr8lTI/3Dsf0Sla4LRrEruvoF8qXzhHk04cmN0TBTM6UGGu3l
+DrccRIdnSFzftwfS4jsTWVfTSO5/FT9md+hKG+z7YqIVnH1FjgLHAgPwJaAnVHqm
+OI5vO23uLubhwg5biYAml9rnOzSYzZ+IR7xvvM6MCjtIiI+qPY9JJo5qiLnkrGbf
+Gw87Tnwqgfeq6cAiiEM2ofR1fMS4OfX7CKDJzajoIyzGcECrj6PVIEfG/wKHMTdr
+JhR0gS2I0l808FasALJRM6UYO+UaP4tTohC8+zvi2Ns9gwMdIZ1H1XyhOURBKWAQ
+05pQLqj500sTpbeTKSiJFmOqoFtCS+hU3Z6e9Cr6R85cbwbDkjqfJWfYZ7b/YuIM
+IFn/wUdBTJMPP/ERuXjfGM4OK9Ozy0eYP/bsnOMulP6RjcQI86pE1HNvA91BkiQC
+TKxFjTFGs/2dycvcOXXGmuPDCAT6MjOOJrzlEqcaNIuIy6wIU4OWBu44EDtiCwhJ
+3kSv57TgnHwJHqrlw8/Hb1VsgG79Of5xglwQDDtGkeB6gLEGGYKMVaigB7sCQapb
+NzDcpuU6ftUJ+Vw6SSRaZ1Xr9eB1gj6OKFFaMS5m9ER76Q09uxnnNzp6PRAga0W5
+oJj3LzYJ2pdeUUzrzRlmLN849Z9tYR3zQFL280+S1TmiR66l2Nprh3DIfqcPz0sl
+tiFOTL/OfBcBikn35BxIMQCq16OIkL5rnRFacoCN/agrDast1fXIC6/jfvJm1pdw
+r7qW+mM71aUkoDqe98D7wUSUq3l4OTzdzC4ohnbXwvKyKcKUJNW86XPFRP5t5rV2
+8JYp6Oq/5ZwK1XuwVA0vOjYZkAADWVg5qIOIepZ06Vt5J44gVbTIV0kuhpScsLSx
+fnuaPiikYd86yc2AOg9STyOTFBRXLPYY/lDRDMU4aA5LpyoDj7oFz+gDcJWN5tP8
+Gy16vtFMh5j7m1I5wwDt5gedvv9q80RuYEC+17FA2A4wXhir/YwJTHb3Xf0snYkI
+6XYp3zB+Itga6Y2FcAcJBi8v/gnLsKHuFIFcGT/0o/3I2gcarXzEIypuG2tolo8g
+pesjZ+YDVm0AO8hceoCuelqVfuPpo2L12utERnvSbW1v1TG2QHHTYe3VQa+Kvosx
+s4G6V0sxI2eBdrWJLd4t63J+qGxhxmJUyPteGvYGXzb5qknlFx9e2evZJvwj4G00
+/roH5PcEYM35314BQelBY28gQP/1qQMF4BmOXjcQpaJMA57hUOu75+IFpYY2njpd
+Mme4ZGw3Ut1OVCHGZ9iyy8fb0lRk3oo5F/Nx2rHo5lkwb/FIQvaVu5f3a0WIzoxO
+gcvJ5lEOOZBOXw/lOeFyRDvHWfKNCXPf6RXiCIbGDE0Jsly/IMKHbk9Fx+zpsCz5
+rJ2exUSWosTI8vZ8EvYZynL7LgrhbHAHhEUrbHJZqyRxHOxdw2wvic54X7VwqqOg
+cY7qaM29Zx9ZArpFyZpDo/zvkL+BbgSYtuiIrIlE7ukTudEXnhPoBLF24l4UQ2AO
+5kaHXqsdjFcfUZPlICb+X0cyVhQ9EhK0iOaNhIw/k18lnBNmpFiZiv+tC9dA7IFi
+iMAgN9Nue2oMqEul7Kx9yhtOcUK4lp68gZVU6M0bHZ54xTav6m6fwLsfc++AETMJ
+VQuwLMTpMZ92AqiHXccH8TieFb6wYdso8q5x7UHbZCtQlGVKErO1CM6x37m0I7jZ
+vjgHakimAHIqwupD6Hl6CUh5YPZlMdLmbtAf7ZoDf/z8DkKm37hFs1BMiVmDu1fB
+5+2rdUT3NMfLOCOxUy6qTDrtCimx3cw/xU2tiP16rZNlP/dU6O1QlLR7S6XAq+CT
+dB5K1K9vLvRw+DT7ZShiqtCmYIiN0KQK9cExyU2xLdL2w2EmR4jTPLPxYlUVQlmY
+v44dgOLgzX4rDUpBXK7Y0XtiZ6z6F+NG+cExTn2+d1N9WdrcDXhBBPUVqUCwp2hT
+kOjOCLC7GKwybKj/IjgVQq+iMyg2wPzZtJNjHA1AsNv3+zAKjrTA63pwv/UmxyhN
+2JSizNVov83YG8bS3WWuR3wGi8/pU7+QEphWfTnlzDIG+EDf48xG4BWEKQ2pxLpD
+6fMd0IoPa5vi+DUZXFTfJ3gRkb80zqTjqQIXIAQS+WPz4ote/SDIgTqDgOCvkNlT
+/Q/oI7uyMr2NlSZO9fc0HIpCUmYJvum57f7MT5rRunMfqUC10J+O/ro9WOmNyXCj
+4Ub0Sx8CdZ7FxCeSxaVfW4nE6LTlhdl3z/2p3idI4rHsdqJkmVcBaYXRO6LFzfui
+zKqWa/DUfKk/v8Cqf2kP0NQbfmjEPOG1HjwaUZXwLaYfpYWHEnzcbmg06v9BuNnL
+c3nSEM5WN64vTJRnflNdYNdyfpD3uPIasHAWqjW64SjENoTVJvXec/kb6ZECG5kK
+S+xyY7scs1F6Z86oqQ227+1RKSaao+FImr79ocBykC3E8TeZST/ShvINdVzU4LCA
+HBrc0nUHOgw6aNSw9EtpeRM/F8FsNQF1GojL5F2gEnZr58YpCbmWJhlQ7YY5ymdG
+lccse1Y8tX4e1cm05R4VUhVs2NNtW2MycNUSukGPDSMh2/3Pfr0UxcCzOR3Zp6he
+r4ctb6NaJelq0563uMtN2ylwskX1JeV/nxDtP8LaR/qoqywwPs8VsrMx8ClvDBeo
+5KcP/UqTGw7dIyMG4/5u/DdaUB+vWqZR5DNuE35G+gv6Qdz5Ih1qNDBTA25B4xyG
+UHAtz28xGWa0Hb9OZzQlPqEE/QA8PRNQARvPJfFNMW11RN8C2qzj4J9yyDgLtkz1
+pR+IWNONVby0kw3UvSl4ABdHmokKOEI7sFZ+BF3ZZcHeMUa1XV+0v86jDG4fUS8m
++OpsjWnBE+T9CtW0W0c9mp4eAGfWzz19o1ou8yfbf+zHKBjp6nMvf5dIx8h1uxQT
++RevOgHSKRVQeUWnanBmmmt0Pbsn3reOk0s1BGFjRWKGx36fufu7b6Qrrs1MtdyO
+XcRR/cTdAe9QWRGnTODSyADtfi8ZOMuvmFVL7NjWV2/JBK6YvRLcrGX11VPDip1A
+8RTbrOqkdTu5W0XovERf8A0B/ybdpajpy8stIexZ8uxXkcC9Vr91FqbWVxdFfeqn
+ezUAlOIMtOynz8ga0E0m7IOI4ZqMTiMVvBxCGif94Q4je8FtjXzf3+9E9RZGwMTY
+dLDax5GaVPp0YxLfEE96pIsc6Kn37Hp4JVurm4x5qbeL7LiTm5qpshZJoBVxH/e7
+5RxgK7RPW3VL99RImXahDmH5L01ZUyb80L3hMkiWHj9ap4OSugVNPJ7RuVyhfzGc
+JlUUgc1Do7vfkKKWBskJUFvHEfue/Yb21k/zHx5MpRQTIJoYYX3wvpFx+F71wQVP
+cfOVpZaoV+V1yP81S+lJJdEVSMfsRD71e3JFYBkTqCHEE0ETBZB0f+oimEyB66Th
+PWlV8NrpvUPOpCuaU1GHfaJaZl73g+rInMlrEoUcEtJCnZB8l0ZqxoR2wMAbZWKr
+ZOLdwYqfTRVA/4WtUkRHEhnlTJkeDPAcPX90CDFdfxf0AJY7iEEGXzT+icUNdNWC
+7tLcu6YirUSWP/1u+zWkPARDJ7Z6rn5brymgrWowwQ9L1hgkiHuYsrySBAhpELeR
+NKJuiUhddaGlZ46wU5I5l5b2HtjtkdHYK97y1spIoSR9daU1N8/v0OJhk79zj1Yo
+l8JchxoSruOB6wgkUSYaaD2sQBvUUXQWOZI3342bnu7LtiFdi6llRIe5WdvX83GT
+cvTBcx4swbsQdd5tXh/DzmkH4Oy3xmYNCozmcWVdEsB2dXBliFVMz/1r9O5Vtiew
+bim50li+tMJXFGUr0rV8IfBqwVD2gExBNn6XSwmycd0pKITd/96CmbVW5AtHQfhv
+DBexYTKeL6wVPiEeclWQYPVf8+JYroShLcpADCqiedzRRW2gOHFV846GUn4B3eN0
+j/Stc3AuYyDp+3hjIxtLX7ixgbnSpz/PQzA4GbCkx6Tkq/X+fPVSlwJOFCN6rg7w
+tQ3K/F7cNkpenm+aOARMSKArGIBbLIrvQ1QEv3BOgrHh+udE2UVo8F61EF0R7Zar
+G5bKEDm6aSRrYy2Ll0zb4PhlCnl9YARJdLhnpswLBjhEpyZKvMLNjHpK/MUOthhc
+Ss2FyBoO2x2DP+YDnRQGdoa2ir40kzaV9Vu898Fa6oNEZbqb81IpgI8HEGOw/QAa
+Plu5aUzAlxViiODWPX9J2eNQpnYKVJfclrfBkIWQ3rB7sA9r6z2kG+f6kihekBAb
+64h+dnGmctfeF5+LIAQftEHpbU5XfOuB+9xvhdRp8j/5/QskD3sHRW0eCLFNow7G
+OPXf1SWkVpO2jGbbZI4+cQynUGepe/Jv7XYFA9rDe888DQSQ0OxItQHcw1+qcWqg
+kCyicowZqyOHqRtAhjX3aHxsiLCwgd44gFk/ejMvUJf5i5KCQSMjJKRaL2Xx6oKt
+brF7VMnvO3f/7gEWqNmFOGjTVj2tdYSGuq6L01atYKaYsjn1fkk1stchmDJsGnV5
+WHZT+pY5yNMXHSAQer3UA8x8Rv0Bm68No7tyvGh4ofDHgpOpFiVMY6ykaK57jNfH
+dN+NKRHBz+8onuka9UaaFtzp3pxvKoje171RuLsZEZMFfCVJUB/lsCQ3DkWGcrZo
+3FIYWzd9ilG0h2NIa1wqW3YHtRtvdAH/F/dQdBJSW69Am0dt4r4OFIDWR1S5JBFZ
+cB5cr2ETZZ+4E4r70tI6AxkihRPsdT4u/npJwSJOQSOt/B4ckpJj95HQGDD8mFJ8
+5w1la/f4dNAe738BZP4wSwcU88YI1AtgyVbQ1tejdHfglumowe5LjhPPV4NN2eJw
+5TGavvCZk08rm2Vv1ftJmZnZcDrbfIjb9gdzEUWf2ML+Hqtabz602WisdaDEBnGa
+LmyyCldVOG9TFj4LJ158bonKnsthCrKJRFxda3pGCRwMBaR0ySgzn5esTGCK0KoT
+qEz2cRtRX+It1ekGI76/b14fjFdzCCLGoD+7tMuVbJ2W4kP+KZMBlWPzG2Wqni/j
+Bnlb7wLPlqJtzP7neFEvLuYNSJfF4YIGLHlEvdPuO3pGP6ai1e7y7PIvLfCKOyP6
+ybwJqfcTHHAW2p+MXlU3tY6MAn6Elz5zrALcZPdhRRV3mpNTH0WsYTaYl8ltwBSJ
+Y6HjXmC9jAWH4pdL6Z+nXgIot1qiTst7iS82m8AZt5iHSfIw7pqrVrfpeSoqoZxo
+mfy2+gQ8gwWXOHpcmM23EOuMmrDBmrWPBsONw9/CBhiuCO24mFbTj+k9QuRlE21M
+1XUFNb7zNQS9RgWfOdufBuZQzImxNlw3+ubFsxuPuCEbjwXPZ3Qyr8J+mUfbhQ23
+Tr0Qj07uyvsPfJ0o6gOHZR8q0nRsVMvBgrSyzyRVx6perNYN8qWGAcghP7u246cQ
+BrqBtuqK3pJa007H0cHagWwJq2T3VPyo7+kjNPhRo8nHJ9B6pzDZ55q1op33gxbx
+rSU5n9/EXsdlopgFBDCFSzpdk6nauKXkppE+bMDRKYtPK6Ijr/kZNK2JcqYBuxby
+XXYaNTb/ekILgIR/HcEcN+DutzZ6qsOk14/xCPg/kEeAwaq9Qv3hHI7lz6IJNoON
+iOqtRv3w3P/7JcUAAY704/b4ie+6nzXWlV9YAho21ib2+kDrzUsGqkqi3PLQPta8
+adtdNXhTkBBaomKNq+GtfXtp4hd7D0x5mFZrfGcXHlWpkhxZIenmTxQ9sd/1ZdTS
+JZe04GVbCZMBINl1/4mTT5T8sI1HM/22Rg07YxMKBIWn9Pgb0FJbcXF69lU0GU1M
+CnzW8TSJYLeal5XH+3YZJKJion5wlgvZE2B/9rjvA4kNa+CozgJGWoW0VQVDCEnr
+zhaRzPDFj8ykGnNK3puoNs4zdxtNjN3jf4mc5nOFjfkSKpEmuBRHOqqRB9j7aOjW
+TF9/A5tipDG3Su7gY+s3Z6HVtPxamY6QwzzfGLZrjv/k+lN86csbF4wK2NJ2php8
+VFZ8CwqvfJacnC9MUoBU1eAk+WUB/Faz3ingmJof5kXHudswOdLEhm2ouzbrKA4M
+k2F0My58bv/LS5mjZ3Jb25EpLY3edtAuxeil9bnuwv/6otiw+7OJ7TnsFJ54u7CK
+7O4Ovjk1pxhsb9Ppyt+Bv3PZPu8OaEzJtHkKnzClZ79xPlE5v2zPYGUo3Ru+12oo
+pED2kyXpSUGItFcH4HbjMCFw0lKwV2sQMXAN64laG5r8UZ6W/Y4OxcKdm59mZEzY
+JZ5V9n38kDZC/O94vX1UGIfYRugCWq/LkOkaIMrGTaonlj59ZLnYv40VWKoQJkas
+NE5UcSOsZwIa6jVd1rivWUxe/4qn30SjrJzL8bgC9LCWIaTyorGdi4kz8nqG/S/W
+HNEa7qWkPwmN1qhKaN8w48O9S+Bdpm3YU9rMqh1aaAQh8GDorle3AB0A/Y+YTzgd
+/02m9l0esft/kiZVSkfS+4mUbfj99TDGXgcgpAdS9V+1LNMXvakuvjvBrQ4i8ZKj
+j3lxTKVAqbEL1lPMM52VmhxqX+HxZuI/86RODdxKNcNnIk3UjSVyPb7gy5N6F6/l
+eCHpswGtu+YK/AcobCuvXteHnAV45HHMsNbNWJ7m2l1dBwazLZ47d7K7p1QSQ5VI
+xQuHbs9hgBNtydU4UVoP+Oxh65VAyWoKtG49deVpPNZLO1dyBWJ7QyLWAYI2F8Fh
+BikCBkoxtN2EjDNbu6chhC0HUJICvmnCUsyE61XnZt8GLF0Rh7eG3rMSipshX0ph
+W3KEIMBNBTfGs3EUl1UFMydMdhsbmTgVtLhEmDwQRMr9Aubc/7/bLt7mqpPUqzXY
+bHsaa/ipvjJwUIYpUgAlpdHqRB0rvSJSyVk5M83L2ZQMFsyacIHLf3w0chYq2gf/
+F1xZaNr/0+G9a//kQF1Rj+0GAax46LBLpUUhONZlGpw4ZecljV/NuG5vFIkklnZh
+22G1OIYAslODemtAmjLTDWGJeg0xEZniEY8qgyHfI6QgTXQmBBuikgMsc3rOUudw
+Fpppsskrik7seGkb+AGoyZnQnD9/MgiQseruao2t2AeMtr++u+eTZZZ0o84waBMC
+tlT61m22HHCAsxHXXnZqotj2dKVpHwl5jnduVvpWpyVyKcY0nMBaE4J0oJ+0cbPZ
+awzpiuW3UzHYcLrO8F0ARmKLVeNby8jL7wR0f7SDoemUH6+xC+ZUeyqajiCW/y/I
+PNbaXt8ed0rqdlcFj5+LCfZ4HrKdT2ZixBtYNQhoDr3llStHklYipTF+6k8tXi81
+9rEhNJYRw24vMS/O8Dog4qtYHg8SUMn14ndEWybpA+aD9t5TIrzGh7PBGglLUREl
+f1uQ5jOckvW5M2VIIsubjqhfNc2m+9G/Bm+GGrHmSV4KjG6Cn4bOh0n9a220WAV5
+OPH+TB9oaylQBva3ZIdsHFtNqOwlzTfy45lIjpi/q85MHsmulUCLhOziT3FohvbI
+d342KQT5fkEkZePy2dkEsdk6JfTBoBp5eueuDsCa1iTbtTW4ouOd7p6LLJ2oSQmu
+METv0JurYvt39UtPTv7Wx0zzBGYIXIxZDZqZ73K2fHM8KpWUtrdSWbhgC1gbOdXz
+OrVm+jwA+TS9NrjeJ2T+lYTHo7LIj5Ijx774RyUtWB/JHfSQXoBbzKyvPQ7iwYuS
+kMK7hAy8BPGLEieTsPpOlIF6eTcB+VoI3GT91U4rVa3XC128aBfGhgVe29mTcjzZ
+uTkOOiGJBynabDyG0ACt2nN9sz6xK9bn1VnWL7zFnkmjC1J3VKX1PqX2DzI/rllW
+AW1oZbmYYOxVxg/2f2PnIiczoYCu4gHZyxyh1OhaHwonJuGq4dUCc6j3+2lL8SRL
+jYhOUp46N82149Dk8gGJlamHemFYyOXf7/LKTerfm31szpQdLiff0kdwUU6tD345
+F9tSjDx2FNUUpROWVVuCpc0muQ2R7OyMmUco8Gq126TeZkyX0xqvtlxBk0IzfDTq
+Ym7VyyBGPr3kyuuznctG1WtO+PMQ2TbfF+jr0iD9E3HL63Q8696xoYCDlTIIFyDL
+9dpumybvSxSBf++7lG5LCVc4kFRbreSZ+HOYkmc1ilkV8XaERjjE3vJcKqbZuRYz
+XFIMY75enTgYKmYpf89fFfBr40gBCoqG04k6xQD3AcrtLc34RjJVI1l+g8HibZGt
+mDwWkMdf966RtWRd1HXAeOOgN8PVgTLmzN/00xYuWR57peO8SrIxA8Dea5R5mqaD
+KkdS9WsVFi/CX4Y4Q1vtyqtq+557PMgirTjYhRcP0U+AZbt+MXtk+72gJq/e+OiT
+UUo9xBE+NJqufpYOz7/rVDaWZlvLvumVtSo+6XHMAjFKGoegl2H5fJjsIPBp6y6G
+Dv1ivBxmpJjx3DfHTXWYmJ10x/zRFP8sOn+64Cg6OdexXd/zgF3fiVJELn4zuDAy
+JriCgPh6c4AZ9l/x/CF8bxcZDDIUp9GhujH7OBoHflBBrtrJd7F6xJWwbJ/vQ5Y7
+eqtezvbFX4hQ34cnYzfzWDhGjXMA+m1gZlOzSQUw92zA5DEE4O+a+rRzB0gQh31G
+Z7ka5ewvFPeZsRdUUIDBxMl4w25cQSSgSpjtTvkqrL3SMhvirw4PRSMeTNrEaS9v
+FmSeeZ0scFk9/b9q+8qYLf9B/riNsCPgwZ3ZmeCeBgoM/eDbFCvGnrX9MkxTtVMH
+9XTk3daW7vtLRoyiqCd4cNCLdDB9E0pt8JPQteFjy4lnPS+pr9wU3oYRhvLMIvNZ
+i2jH9FngP5Vq6Ml4iYqHzc9jV0OP3DYxBsddROmp9uLzTWTo6k1hrVaGSt+CW+SU
+PMpdABZ1bbofD0VO8tmpOWueJU8wIYKpfe8D9wa0B7N9Igy+6yZQvaoO0oKiAv/+
+4Kei/lfPIzKOzHSMc6Di3dCCcwVBHiC0gXDgabXR/G1Y3lMrn3H/sWFA0PYGmRnN
+Vzzc7FztSKSWHY6GiOdpW0r+/+ywJW9+DYWtJ1nMOto+DY9Hw6VbY8E9vTsjZKE0
+47dmHxDJZpmIJAAqeA8bB5GvqHXCaAIHxmu/o7lwFa5aJ0IPBT9iyzg5nTr8XjSb
+G25W4Oyo7LUCANv+LVL+CpOwQdH9sYRo5NFyQr2w2IHfkllQGOfM5Rb1uIzKtBHm
+byo7njKYAtSchfoGfpzXjIYkDw/Ora7M+cbyhks9K+7KsGB1wjpeSl4xrrQgcipv
+6cS93YT0Dtup/290P9tNAzrVBeB6JoaLfyQMWTfTYr66Ye3VzX1PzEimK5qOMYf7
+17JYcGj6bpUj7vMNuh7eomMFtr97ubfc1d5FDkD6AgsdnJ/ZKYGhTKMg0QC/DeAw
+U0fnOtLs3DRyl4XKOzSeh16BeBg8/WlRovZ41aGPFNsbsD8qxWyNKC+PTXwPIldD
+6zI5SiPOv+81ezHHwmhLDqkjytu84M2e6zFqb8lEpvc6bJUKviQlke4RbfdfRcW0
+OxOeDzxsONDzzyVJuxPUakpzjSEsNqts3Q6EMMkli8jtCBtddMETmvfsHbQy9eX0
+pIdfI5oJxsZIxvwRQsM2LMcQU6hwbJCq1hLipC2enCG1Ib9dqvzUiq9SL6/qNX2L
+ArTGAdjWToxRhRKCEw9C4C5KSRovSl0IGUNgjzWA6un3YvwEqc260xQTVyj6DlX5
+5ikHmeg4oKB2dYFyefcwYX8XzhH2TVTywwou3XYQlIobcUUlLZReZR+1Mlq6Jv0B
+udb32jTS6T/RX27/FrvBmQyN2HQHE3twi5BIZuusGVHkid1p6Vb4KA8kpW4ELLE/
+PCJLiskCJz0Ciao8WA4DeifrZxoSqXbIBv49xolC7qOWciOASyEF43bpB2IUkP6b
+F0KNhWianB7D+dlv+ehLaFHt/nbDdcWxJPr8oxXKrnRa7l0dmW5bEuL+h4zFNsJV
+TTo4IMUxKljxamOMzqo859y0XVOWiw0LDF4cq8eMwYP7Jv/ftYMJz5KKnV0HPoTT
+UJxJnGr0sCNzlGfSp0A2/16+Fp2QHj8iWRYt248hUJbK0aiuQ/rT8mbvRBr+wUPJ
+YcgSO87JuETRabg+3V0Oext7C4utkrrHOkKTn/hc2b//14Ws5gCa1o2JcAwIld69
+xzBh+FIy+0vXqwuneSHQExzvBjvDCvkhhtq4O5O2wKiNY6Sd+Qn5PLKeq1qYp/iL
+dpaMF05hdGlUSOcDQTSmTmu/qWnqOK6DrZNOSjIAgM1fj6ZQqj7wvOl1rSEYp9vP
+35P2UCdmeiwjNnvRnmKbjqnCT/soUwHOWjb3Ji83E8RY0JsRKFUWJ/MecrGuuxWW
+fi/AJBemRaB0Bx7fFeqZToN668kegHFiYVOAHpVgbXRuI3V6M0N+K3ISWUK7ayZn
+qOAKHNaVe4fEHUxVplqLHVP3xQxDJySdRPLHvpnkcBYsJIiVnjlFJ9pxOmUJ0FFo
+tnhwF4ikjndDqosclqJ9Ftfi1gNi5wdkxI5USIlqxpVAKTDtmz22YShG6Ouu0E7z
+FsUTxEwvJnTvzz0cH63YkwFCJ7lF9IIOrcq7KGUoCdYK9mdcizy6aJgwB9OUGaxS
+li6FaJ9T7bVF7XPIe9js14SBC5+UAaLMZ2cQ8fmJm7m8T8LB2dMNlVvnMQg2jMY4
+B+RAX1xuql5ib69AW6uN3XIgTh2PaVKQMfDRo3GXXqHwYivyNFe9VN8uHulfUnT8
+Pz8TqQRvLHnV+QMuaLxJ3Mz7VuWn5Fq+NyTUHAQ/2wdxkuEky0Z/xhszW2Si/VCB
+lHfJcDzvzSUpcPwevt3Sb6lLh5s/Boz0qjBW1zl7hJn4RbkQw8+SiPcxaGBCI+rE
+jttrjVxnYuW/XLhEocWMvu7RuvwTrFUZVUK39DPJPcWSEDsRHh3+PjQ2JS9pBe/+
+R91kp732r3GjSytjxi8yATa3Vs8IRxdN7KgV0w262U3+2DLNc/8hFBavEj/9/ZYZ
+5nSNTFMwYQkHflvXLhtwfqO1QLrHL6eiaPu6dsZXjLFV7vk4QJukyJz2q6qyj5B5
+vbciDXXjt+enjrgM/EifDN9ecsIuOIaUBFu/5H5KW5lpsF7qV/WhCNagXVhrMeFy
+KMHc41+2zCaiK1bZcxnFTnGupw2HF8+4dEKL7NMryDqacuXEnIuztw6MxoumdndA
+qm0nUJCS+6KYS8+Sg2TG5aNzPhVGWKLcYvPSwmOvFzFe5hgACQgtymcig+opmcU4
+GOWQ6FfbwTPpCJM8G989AZ22CrCeq7hVSxaC8Zw0uPrFgXDKHG2wejvLvcUqL9B1
+vEgJ6801+5cC+3IqGtYVB4ul0q9a9gldkz3TYiUDx0oQf0kgVloRtBM+vnTVVe32
+3ENO6Uh6P6/GU6KcbNh+Y8yoXxBqUJtFUQyaixcO/kayiLO8MKmKYOcl+vnkxpq2
+g/O8dkg8CIbMYYFag6BCqck5f8/t13u/IHDQufeLKbgxXkl0VmjhvcghVA766J2R
+BC0ePdnAttvwr2pXHnIbt/u96YgHa398dQu7udCWZR6ItGx+999YQcZLOrfhIiyj
+DBG1hgOMZvN+d+nTFx1qAB8vSHVFHz49/sLEP76/Ra/GRkogewouP97CSbioUefC
+s0f3Y1AFpmhyN1yBjklALzlVfu/C+JVmSVdACqyxOzhpiJCGEfGFWGsOOyVbzTPc
+5fm0y3iyoS47p/J1bAAoc1bIeprTP/lLAG2HitnkyAg7cfHEDFHvzCkEFXZPReyi
+3NnL3txPlkrkhT76n05qLnFNvtuHU7m4U7H2SbesmaNA3/yJy7fJ1JpFFD/WlKrC
+8rag5gT/lh8p0jFuVdeCFcSMaIc3aFl2XQgkiYOpfbqQ/1SY4uwSZuptujSUzTrk
+wU4liG2oASF6luxCwM7O392yuidJaahId2/zZtm3HDtNOEOO/3fK/TWTYcsLDoF3
+87oCxaUIjUn3p7OSpz4BEOlKeZCN/CVUyih4MzrY0NyNwPrsBYgVIRgnnZe5HrB9
+Tv0UC5ilo7l/LF2MA5ozhnt8l8osKW0+UC0D+xNDPbj0GrHv2gzV1yO6amedXADf
+XmxjgktduKObRsSVD2zUZuY5jbW9+iO8kHeJVfHiaJmo49d1AO7GP2mCMcjHqyJL
+Dp8JImF87okfm7tI2l9LqcpCe1NZYZ+898/qXTPKKhNx06gv10lnKGNf8IXNCzfM
+hS/AU6Krg5JpZxkNduZRkajHf9afEJtMSQVY2l8NyDfHEteeGB5HtCb093W20aCZ
+btMlLYsncESNgHBx+F57mYd8Sv8TrlrBrFBS5xxXQkcgSogOsPh2iJBytfB/2DFW
+iAj/G0wW7UDAwHRmlX6ASGC9TQH4mTuPr68sZjEZMBan6VipEzPkElokXJ8gk+4B
+kDQQSkE+B11l/lrBQpC7O/FIKD1EVY88Rx6I/30TmPTyh9adyhqpsnqkUVCui95M
+RQDYyZ6aLuB3dsa2/BO4IA2Obiw8TZ2B4NQPPTXbrvsGphDW/HZcha3w9ktGlb4A
+ploVF2R8twandHLuTx+b9jgg8dxjlyplHPtVolpRV1mtSLTkXQ2vcDL0tN+aDs6q
+9+ed4IznjWXycZNkfJrtL8n2lP3SXQe+d3HA1R6VPd0JH/W4bva7b8K/pjJjyyGK
+YZwi6hH5eRcHUcZjVFajbgG1ZxjuaE7qvd9jXNTyAGB4+zZpSmYnlRDIY4d3Ky08
+FaWEnQ/wxpu9KycyZPqBsuYPJMb4wCB3RuccsvcXMtFqogXFPSLNIRB0k/CNBtXc
+TSg98miHxNtE8pZpTnehEDc60aD4urHL8EJPV5WjvyxIhODymFKILKbuNUMMdGjx
+kUzB6GDXKw+SvE5GzMbfpFhypYX/NkfAUB0PnkDEyan3H+CdsZHrZ/orgA7iEqpn
+c0lojG3JHeoAZwOfoM/2zcYyugEdNDTAJmAGHVADONT6YKfTLPQdhRI2TJFkdINS
+fcEGPbO+/gE2bMf3bq8HU8ED6pZyTBUt3ELDGFgRpGDAXHca85t1C8KagZhinZYZ
+u01kYwvQALG7cMRf1f9ZjiD+g1/0RxSSvkEJu3x2xD0+db1Y4PQD4J0/lQCc/jam
+fDBZ0TmOW+qcDp6QFXl28OUP7HgQzn1nlX9jIVpiwLISs3wIucBmSmIrqsy2vRiz
+Lqvj646SubA0E2ek92bepYv0SVdVQuSoGVkaxihsVQ77FbkyJIVHQqc0CYrMOh5U
+Rhj6RtsPcJtUxjcaAttNkRlByxxAnPS8wHg3zaLpxsLTlwQXrTOtZm0yu8a7sniR
+yFAfGmZbaILw6oCNOiOlMqe4matdDEYHuybSxDpfgyg13wBnhXHcMnwZGZCyUDxI
+M6vxInKJQIU4faLHs46MJtpRQTzgSeCtOXqJu3Cen1tqQv9tX0pbZk0pCv5ZhIFi
+ZWAZ3Fpff0kO/82wRpJkSZakbNo/kQ1wVwRKM6y4TFcuBt2hgxLcrUN8a8CSkdpj
+IueBlunjvdxIX0MRGyfuvie11UpLHA9ImrydHa/gGSkZ+WMjE5SydTLOxtISyp9T
+wR6OaGacUGMyVZBOxIn3WRNbeViGp08UCAq5AGonYV31ImpG4QaHN9t+9t4cEoN7
+8Rk2EJBkrE8+0URxMYaxLQrM7qMnwj9E5dywkrkVCewB38eCHzINKxOr/TSueVCd
+53/bYVYYFcGVCUbgtSnqb8BvF+rVEBz/IA8n61tFhFs1+ttLDpvCOoed/GKLjbFB
+nfJr4/eGf7zsQk4UQNmxEEX0+PaWZTNUv3yKjEKmVOlLqnFXK0xinQlaRY9H+9fq
+ylP5NNzSCx68G/CVdE6QuKoWTuVvqBLW/DwM05/7jjzSwzTlRmME8jRb8LbSQTFY
+TQI9D6xJDLMI5DeVDChHpPKxvlyHG/AN9cRm5AIBXMo5OWqEdsbKHXHDGyprT2fS
+ytm+4R4KjDdc3CjtYQVlbOJaHal8225oB1N7zGV+nbxNlJB54kHAjhTf1iUkcBXh
+duuaxXInsYBA2P0268C7E64qoiFE4LToxbAr7pg93Szvs6/EjjfdJst8573TyqeI
+Ne18/sJl3GCCOgsR1UT38fRtsQnmmTO18zQWZB1ZS72jLmau3oepZDjDf94ZPYJR
+DFZyT07COOamYbtTCnnoWjUoe8sVeoClnuGKYPQ3k2Gh1Kn4IsDd1eNS+ftB5s4Z
+xJvrVg+PVO1NXojmzYU2/1cwyTOEmTywuTgJ8SXF0f4BoEc6z1zaWSZQRdjCysws
+UjmGF7PAb7GdB14rWQc0LumLcjArpN8L8Rgq0DZoYyPaCk+01VxIFWxidAygIITF
+eSW6IVc/+CWy+gj8NYOFNWl8q6WShw0UYSOCA7dAewhQRk60XwWXMwIQTC9L4uCg
+ZfpwDyOVtA8Xwy9VaDZo3pFtNqWxP763N3jI+xRwjq80y2prdVvwOZa5yiYpyCdV
+ZOl7EM6MW/+VkQT1Xxumws6B5E7ZBbNRTb7OS/BLBwuOALZQBkA1cAlAXxlbDzFP
+B5zb0cdDaUb4K8uXH5lHiblB7PBDwvl6gac2S/QFWo1tzUmOR9KVCoc0mb/XZb4C
+ljG1148kmngQmx1wsYLcRRLxEr7Pw6mVaYImxeuvYA/oeIJc/1wNTewHdA4m56Is
+8Kd9igHOyVLc0CdlQ3yZRxHI3iOVCMRC4DR24vybmRxNixnfLsK+aHSAi5RBPb+k
+dbFAvbWjtdEiPQEd6rPXtBTDOaoTKEfqfLn7fPHjGJ5hPRj4ORmykJYFkCCMUYUT
+xwbO2fQ+zJSfYqmRxwqJvHuIb+Ih+0iGS9MzKbDoUw85lz5t4z1x1Hn5o/IGFl9w
+AxUct/n/+1OoQnQVM405PZQkTR+wzGNs2/t8eebG4gmX11FPTTWNUuldRx/9i0qj
+3/T559sUPjP6tFa8mjknugmjVLZvlSExkSV57byVKblOuQ2i2t4hTwmk2hGt24na
+TLbvMJU8gE61FdDSYLiyQgOwudfytBr+S1d54J9eInwqGg9aZC/vukPq/4pnMPn+
+8NTeSVDg4yoWXZazbUQdtsIn3y8GLIPoOWNuXoFMD7TxJa3JC+VmJgmKwwPKLIUm
+UrqU813g1zi6x87Gibe8xRM7KW3eIDm24b64BVDjVko9h0O1ya/R+wpYG4xFeLSf
+pR5GTCxnkPhfDpDuDIePIflmcdTmDvu5loza3Eus+iili7u7IqurgalWUM+vMCUP
+Q5esZWtA4xtovsY97nwEGw1dZ0wUFghi9Dgry8moauUHm9LtjnMfHD6QRh0d3yzR
+Uspv65VYmqy1im8BZzSDLvnRwrIWlcIrhPgoXXxLkCevqBYD5Pdr35t7K+nhVhfJ
+kCsN7BJHo3+q/4xMNd+uZn8ItBNMjGKY9oTFzcHH0xqgNO8itCMQPbqFmVNGCVIZ
+95EHsIf0T8CKKEHBj6FPjR3GqAlInLjJdpuIQ83n8l/zRPpmQgrIBKaHacnTELjT
+MUBz/H1u1fPRP/DZOHQ509lubZmLQKn97Doq3EZvttGA/nNNmHeFc4EkFB9qjqUI
+JRNA70qaZR4A7036oVbDIII2lXpfHUwL60cXiKk8PMdeR9HDHYcKEoP9q6fYYO5L
+vf11FrlCr0VSPtFQ9vrOL5iLguCu13wJWmDTfKIBbGEy2ADVp5yiWXNPE3VXkXeS
+ljJ1PElOQN4pvmXnC/xecZ2rr6X9o7LQ1qkNiV2atgxQWT84/v0JS8n88vkklnjm
+C3K89t8mavoWFqMzhKiJuVVfalldTjTpfGpRDLZ2GIvopuwLK+RdAW6aRX4crduE
+b3uCn4IexQN41HS/KkEkDBNGbsF5UyfmoBucwWqMz2ue2EhFPFLrnaG6Wa5zKJek
+tNzIzuvUW3guoy5cO5XaFqxynUUmYqHzO+XZyCiqvOS28PUP33r4unJoKTTHJaO0
+tYZ6c+8WG7lz2ikL/ghS0yuuye8qRIp1oD+Rrqd//LgrfIQoeKhe2DxbLRpj4xbg
