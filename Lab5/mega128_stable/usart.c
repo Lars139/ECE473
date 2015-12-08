@@ -29,7 +29,7 @@ unsigned char USART_receive()
 {
 	while (!USART_available());
 	
-	return UDR1;
+	return UDR0;
 }
 
 void USART_send_string(const char* str)
