@@ -32,11 +32,12 @@ extern uint16_t eeprom_am_freq;
 extern uint16_t eeprom_sw_freq;
 extern uint8_t  eeprom_volume;
 
- uint16_t current_fm_freq = 8870;
- uint16_t current_am_freq;
- uint16_t current_sw_freq;
- uint8_t  current_volume;
+extern uint16_t current_fm_freq = 8870;
+extern uint16_t current_am_freq;
+extern uint16_t current_sw_freq;
+extern uint8_t  current_volume;
 
+extern uint8_t rssi;
 
 ISR(INT7_vect){
    STC_interrupt = TRUE;
@@ -319,4 +320,20 @@ void radio_int_init(){
 }
 
 
+void radio_str(){
+   while(twi_busy()){}                //spin while TWI is busy
+   fm_rsq_status();                   //get status of radio tuning operation
+   rssi =  si4734_tune_status_buf[4]; //get tune status
+   //redefine rssi to be a thermometer code
+   if(rssi<= 8) {rssi = 0x00;} else
+      if(rssi<=16) {rssi = 0x01;} else
+	 if(rssi<=24) {rssi = 0x03;} else
+	    if(rssi<=32) {rssi = 0x07;} else
+	       if(rssi<=40) {rssi = 0x0F;} else
+		  if(rssi<=48) {rssi = 0x1F;} else
+		     if(rssi<=56) {rssi = 0x3F;} else
+			if(rssi<=64) {rssi = 0x7F;} else
+			   if(rssi>=64) {rssi = 0xFF;}
+
+}
 

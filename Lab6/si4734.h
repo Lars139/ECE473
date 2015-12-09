@@ -53,4 +53,5 @@ void    get_rev();
 void    get_fm_rsq_status();
 void	reset_radio();
 void	radio_int_init();
+void	radio_str();
 

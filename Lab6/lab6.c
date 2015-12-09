@@ -24,6 +24,7 @@
 #define SNOOZE_GAP_M 0
 
 //------------------Bare_Status 
+#define CHANGING_FM_FREQ 9
 #define LCD_N_DONE 8
 #define COLON_DISP 7
 #define ARM_ALARM 6
@@ -104,6 +105,12 @@ uint16_t eeprom_am_freq;
 uint16_t eeprom_sw_freq;
 uint8_t  eeprom_volume;
 
+uint16_t current_fm_freq;
+uint16_t current_am_freq;
+uint16_t current_sw_freq;
+uint8_t  current_volume;
+
+uint8_t rssi;
 
 //Temperature value
 char mega128_temp_str[9];
@@ -124,6 +131,10 @@ static struct time_info{
 //A status byte containing all the toggling bits
 //status = [ lcd_done |7seg_mode_disp | arm_alarm | sound_alarm | mil_time | changing_vol | LCD_Clr | faren_temp ...??? ]
 //         8                                                   0
+//     
+//     9 changing_fm_freq - the flag status if the display the fm_freq
+//         1 - chaning fm freq
+//         0 - not chaning
 //
 //     8 lcd_n_done - the flag status if the LCD put every character up on the LCD display
 //     	   0 - done putting all the character on the LCD
@@ -917,6 +928,29 @@ ISR(TIMER2_OVF_vect){
 		  vol_disp_time.sec = now.sec + 3;
 	       }
 
+
+	       OCR3A = 100 - cur_vol;
+
+	       ret_enc = read_encoder(1, spdr_val);
+	       //Inc/Dec the volume accordingly
+	       if(ret_enc == ENCO_CW){ //CW adding the minute
+		  current_fm_freq += 20;
+		  fm_tune_freq();
+		  bare_status |= (1<<CHANGING_FM_FREQ);
+		  vol_disp_time.hr = now.hr;
+		  vol_disp_time.min= now.min;
+		  vol_disp_time.sec = now.sec + 3;
+
+	       }else if(ret_enc == ENCO_CCW){
+		  current_fm_freq -= 20;
+		  fm_tune_freq();
+		  bare_status |= (1<<CHANGING_FM_FREQ);
+		  vol_disp_time.hr = now.hr;
+		  vol_disp_time.min= now.min;
+		  vol_disp_time.sec = now.sec + 3;
+
+	       }
+
 	       //Wrap around
 	       if(vol_disp_time.sec >=60 ){
 		  ++vol_disp_time.min;
@@ -930,19 +964,21 @@ ISR(TIMER2_OVF_vect){
 		  vol_disp_time.hr %= 24;
 	       }
 
-
 	       if( (now.hr == vol_disp_time.hr)&&(now.min == vol_disp_time.min)
 		     &&(now.sec == vol_disp_time.sec) ){
 		  if(!(toggler & (1<<3))){
 
 		     //Back to time display mode 
 		     bare_status &= ~(1<<CHANGING_VOL); 
+		     bare_status &= ~(1<<CHANGING_FM_FREQ); 
 		     segment_data[2]=11;
 		     toggler |= (1<<3);
 		  }
 	       }//End Here -- check now == vol_disp_time
 
-	       OCR3A = 100 - cur_vol;
+
+
+
 	       break;
 	 }
 	 break;
@@ -999,6 +1035,8 @@ uint8_t main(){
    segment_data[2]=11;
    //Set an initial state machine
    mode = NONE;
+
+   //For the radio
    radio_int_init();
 
    //Enable interrupt
@@ -1034,6 +1072,8 @@ uint8_t main(){
       //break up the disp_value to 4, BCD digits in the array: call (segsum)
       if(bare_status & (1<<CHANGING_VOL) && mode==NONE)
 	 segsum(cur_vol);
+      else if(bare_status & (1<<CHANGING_FM_FREQ) && mode==NONE)
+	 segsum(current_fm_freq/10);
       else
 	 disp_time();
       //make PORTA an output
@@ -1056,8 +1096,9 @@ uint8_t main(){
       if(bare_status & (1<<ARM_ALARM)){
 	 SPDR = (pressed_button & (1<<7)) | (0xFF & 1<<((run_led)%7)); 
       }else{
-	 SPDR = mode | (pressed_button & 0b10000000);
-	 //        SPDR = pressed_button;
+	 //SPDR = mode | (pressed_button & 0b10000000);
+	 //  SPDR = pressed_button;
+	 SPDR = rssi;
       }
       //Prevent ghosting for 7seg
       //PORTB = ((0x8<<4) & PORTB)|(5<<4); 
@@ -1079,6 +1120,9 @@ uint8_t main(){
 
       //Once in so very often (1 sec) 
       if(bare_status & (1<<CHK_TEMP)){ 
+
+	 radio_str();
+
 	 //------------------------------------------------ TWI Control
 	 mega128_temperature();
 
