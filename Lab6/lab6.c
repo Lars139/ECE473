@@ -24,6 +24,7 @@
 #define SNOOZE_GAP_M 0
 
 //------------------Bare_Status 
+#define ST_PRESET 10
 #define CHANGING_FM_FREQ 9
 #define LCD_N_DONE 8
 #define COLON_DISP 7
@@ -85,7 +86,7 @@ uint8_t  inc_step = 1;
 enum stages {
    NONE=0x0, 
    EDIT_STIME=0b10000001, EDIT_12_24=0b10000010, EDIT_ATIME=0b10000100,
-   EDIT_ALREN=0b10001000,
+   EDIT_ALREN=0b10001000, EDIT_STPRE=0b10010000,
    SNOOZE=0b01111111
 } mode;
 uint8_t snooze_button = 5;
@@ -104,8 +105,11 @@ uint8_t spdr_val = 0;   //value in SPDR
 uint8_t lm73_rd_buf[2]; 
 uint8_t lm73_wr_buf[2]; 
 
+//For Radio 
 enum radio_band{FM, AM, SW};
 volatile enum radio_band current_radio_band;
+uint16_t st_presets[5] = {8870, 8970, 9450, 9570, 9990, 10370};
+uint8_t preset_idx = 0;
 
 volatile uint8_t STC_interrupt;  //flag bit to indicate tune or seek is done
 
@@ -138,9 +142,12 @@ static struct time_info{
 
 
 //A status byte containing all the toggling bits
-//status = [ lcd_done |7seg_mode_disp | arm_alarm | sound_alarm | mil_time | changing_vol | LCD_Clr | faren_temp ...??? ]
+//status = [ lcd_n_done |7seg_mode_disp | arm_alarm | sound_alarm | mil_time | changing_vol | LCD_Clr | faren_temp ...??? ]
 //         8                                                   0
-//     
+//    10 st_preset - is the readio station preset
+//    	   1 - radio preset is used
+//    	   0 - nahhh radio station preset
+//
 //     9 changing_fm_freq - the flag status if the display the fm_freq
 //         1 - chaning fm freq
 //         0 - not chaning
@@ -619,10 +626,10 @@ ISR(TIMER2_OVF_vect){
    //Use toggler to check if the bit value has been change from the previos 
    //interrupt (you want to change it only once) 
    //toggler = [ EDIT_12_24 | EDIT_ALREN | SNOOZE | sound_alarm | change_vol ...?]
-   static uint8_t toggler;
+   static uint16_t toggler;
 
    if(!(pressed_button & (1<<7)))
-      toggler = 0x00;
+      toggler = 0x0000;
 
    switch (tcnt2_cntr){
       case 0x0:
@@ -655,7 +662,10 @@ ISR(TIMER2_OVF_vect){
 		     mode = EDIT_ATIME;
 		  }else if(pressed_button & (1<<3)){
 		     mode = EDIT_ALREN;
+		  }else if(pressed_button & (1<<4)){
+		     mode = EDIT_STPRE;
 		  }
+
 	       }else if( ~(pressed_button & (1<<7)) ){
 		  pressed_button &= 0b10100000;
 		  if(pressed_button & (1<<snooze_button)){
@@ -676,7 +686,10 @@ ISR(TIMER2_OVF_vect){
 		     mode = EDIT_ATIME;
 		  }else if(pressed_button & (1<<3)){
 		     mode = EDIT_ALREN;
+		  }else if(pressed_button & (1<<4)){
+		     mode = EDIT_STPRE;
 		  }
+
 	       }else if( ~(pressed_button & (1<<7)) ){
 		  pressed_button &= 0b10100000;
 		  if(pressed_button & (1<<snooze_button)){
@@ -686,6 +699,31 @@ ISR(TIMER2_OVF_vect){
 		  }
 	       }
 	       break;
+
+	    case EDIT_STPRE:
+	       if(pressed_button & (1<<7)){
+		  if (pressed_button & (1<<0)){
+		     mode = EDIT_STIME;
+		  }else if(pressed_button & (1<<1)){
+		     mode = EDIT_12_24;
+		  }else if(pressed_button & (1<<2)){
+		     mode = EDIT_ATIME;
+		  }else if(pressed_button & (1<<3)){
+		     mode = EDIT_ALREN;
+		  }else if(pressed_button & (1<<4)){
+		     mode = EDIT_STPRE;
+		  }
+
+	       }else if( ~(pressed_button & (1<<7)) ){
+		  pressed_button &= 0b10100000;
+		  if(pressed_button & (1<<snooze_button)){
+		     mode = SNOOZE;
+		  }else{
+		     mode = NONE;
+		  }
+	       }
+	       break;
+
 
 	    case EDIT_12_24:
 	       if(pressed_button & (1<<7)){
@@ -697,7 +735,10 @@ ISR(TIMER2_OVF_vect){
 		     mode = EDIT_ATIME;
 		  }else if(pressed_button & (1<<3)){
 		     mode = EDIT_ALREN;
+		  }else if(pressed_button & (1<<4)){
+		     mode = EDIT_STPRE;
 		  }
+
 	       }else if( ~(pressed_button & (1<<7)) ){
 		  pressed_button &= 0b10100000;
 		  if(pressed_button & (1<<snooze_button)){
@@ -718,7 +759,10 @@ ISR(TIMER2_OVF_vect){
 		     mode = EDIT_ATIME;
 		  }else if(pressed_button & (1<<3)){
 		     mode = EDIT_ALREN;
+		  }else if(pressed_button & (1<<4)){
+		     mode = EDIT_STPRE;
 		  }
+
 	       }else if( ~(pressed_button & (1<<7)) ){
 		  pressed_button &= 0b10100000;
 		  if(pressed_button & (1<<snooze_button)){
@@ -739,7 +783,10 @@ ISR(TIMER2_OVF_vect){
 		     mode = EDIT_ATIME;
 		  }else if(pressed_button & (1<<3)){
 		     mode = EDIT_ALREN;
+		  }else if(pressed_button & (1<<4)){
+		     mode = EDIT_STPRE;
 		  }
+
 	       }else if( ~(pressed_button & (1<<7)) ){
 		  pressed_button &= 0b10100000;
 		  if(pressed_button & (1<<snooze_button)){
@@ -760,7 +807,10 @@ ISR(TIMER2_OVF_vect){
 		     mode = EDIT_ATIME;
 		  }else if(pressed_button & (1<<3)){
 		     mode = EDIT_ALREN;
+		  }else if(pressed_button & (1<<4)){
+		     mode = EDIT_STPRE;
 		  }
+
 	       }else if( ~(pressed_button & (1<<7)) ){
 		  pressed_button &= 0b10100000;
 		  if(pressed_button & (1<<snooze_button)){
@@ -897,6 +947,16 @@ ISR(TIMER2_OVF_vect){
 	       }
 	       break;
 
+	       //HERE
+	    case EDIT_STPRE:
+	       if(!(toggler & (1<<2))){//Has the bare_status been toggled?
+
+		  //Enable arm the alarm
+		  bare_status ^= (1<<ST_PRESET); 
+		  toggler |= (1<<2);
+	       }
+	       break;
+
 	    case SNOOZE:
 	       if(!(toggler & (1<<5))){//Has the bare_status been toggled?
 		  //Turn off the noise
@@ -948,7 +1008,11 @@ ISR(TIMER2_OVF_vect){
 	       ret_enc = read_encoder(1, spdr_val);
 	       //Inc/Dec the volume accordingly
 	       if(ret_enc == ENCO_CW){ //CW adding the minute
-		  current_fm_freq += 20;
+		  //HERE
+		  if(!(bare_status & (1<<ST_PRESET)))
+		     current_fm_freq += 20;
+		  else
+		     current_fm_freq = st_presets[++preset_idx%5];
 		  fm_tune_freq();
 		  bare_status |= (1<<CHANGING_FM_FREQ);
 		  vol_disp_time.hr = now.hr;
@@ -956,7 +1020,10 @@ ISR(TIMER2_OVF_vect){
 		  vol_disp_time.sec = now.sec + 3;
 
 	       }else if(ret_enc == ENCO_CCW){
-		  current_fm_freq -= 20;
+		  if(!(bare_status & (1<<ST_PRESET)))
+		     current_fm_freq -= 20;
+		  else
+		     current_fm_freq = st_presets[--preset_idx%5];
 		  fm_tune_freq();
 		  bare_status |= (1<<CHANGING_FM_FREQ);
 		  vol_disp_time.hr = now.hr;
@@ -1110,9 +1177,11 @@ uint8_t main(){
       if(bare_status & (1<<ARM_ALARM)){
 	 SPDR = (pressed_button & (1<<7)) | (0xFF & 1<<((run_led)%7)); 
       }else{
-	 //SPDR = mode | (pressed_button & 0b10000000);
+	 if(bare_status & (1<<CHANGING_FM_FREQ))
+	    SPDR = rssi;
+	 else
+	    SPDR = mode | (pressed_button & 0b10000000);
 	 //  SPDR = pressed_button;
-	 SPDR = rssi;
       }
       //Prevent ghosting for 7seg
       //PORTB = ((0x8<<4) & PORTB)|(5<<4); 
@@ -1193,7 +1262,7 @@ uint8_t main(){
 	       }
 
 	    }
-	 }//END HERE- Bare_status LCD_N_DONE
+	 }//END Here - Bare_status LCD_N_DONE
 
       }
 
