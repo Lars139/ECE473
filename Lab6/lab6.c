@@ -49,7 +49,7 @@ uint8_t segment_data[5];
 //decimal to 7-segment LED display encodings, logic "0" turns on segment
 //This is based on ACTIVE HIGH. 
 //STILL NEED ~ and >>1 or <<1;
-uint8_t dec_to_7seg[19]={
+uint8_t dec_to_7seg[22]={
    0xC0,//0
    0xF9,//1
    0xA4,//2
@@ -64,6 +64,15 @@ uint8_t dec_to_7seg[19]={
    0xFC,//Full Colon (11)
    0x40,//0. (12)
    0x79,//1. (13)
+   0x24,//2. (14)
+   0x30,//3. (15)
+   0x19,//4. (16)
+   0x12,//5. (17)
+   0x02,//6. (18)
+   0x78,//7. (19)
+   0x00,//8. (20)
+   0x18,//9. (21)
+
 };
 
 
@@ -227,6 +236,11 @@ void segsum(uint16_t val) {
       segment_data[3] = val/100%10;
       segment_data[4] = val/1000%10;
 
+      if((bare_status & (1<<CHANGING_FM_FREQ)) && 
+!(bare_status & (1<<CHANGING_VOL))
+	    ){
+      segment_data[1] += 12; 
+      }
       //Turning leading 0 off
       if(segment_data[4]==0){
 	 segment_data[4] = 10;
