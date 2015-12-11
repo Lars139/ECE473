@@ -128,6 +128,10 @@ uint8_t rssi;
 //Temperature value
 char mega128_temp_str[9];
 char mega48_temp_str[9];
+uint16_t mega48_temp = 0; 
+   
+//For bluetooth
+unsigned char bluetooth_cmd;
 
 //For Timekeeping
 // now -- current displaying time
@@ -516,18 +520,11 @@ void mega128_temperature(){
 void mega48_temperature(){
 
    //For USART communication with remote (meag48) temperature sensor
-   uint16_t mega48_temp = 0; 
    char temp_unit = 'C';
    if(bare_status & (1<<FAHRENHEIT))
       USART_transmit('F');
    else
       USART_transmit('C');
-
-   //save high temperature byte into mega128_temp
-   mega48_temp = (USART_receive()<<7); 
-   mega48_temp <<= 1;
-   //"OR" in the low temp byte to mega48_temp
-   mega48_temp |= USART_receive();
 
    //FIXME
    //Convert the unit if needed
@@ -543,6 +540,151 @@ void mega48_temperature(){
       snprintf(mega48_temp_str,9, " %2d.%-2d %c",(mega48_temp>>7)-2, ((mega48_temp & (0x3<<5))*25)>>5, temp_unit);
 }
 
+/* Func: bluetooth_to_ASCII(char)
+ * Desc: take a lower case character from  input bluetooth UART 
+ *   and convert it to upper case ASCII character.n the system
+ *
+ * Input:  A Lower Case Character (for now)
+ * Output  An Upper Case of the character.  
+ */   
+
+char bluetooth_to_ASCII(char val){
+   if(val == 79)
+      return 'A'; 
+   else if(val == 39)
+      return 'B'; 
+   else if(val == 78)
+      return 'C'; 
+   else if(val == 19)
+      return 'D'; 
+   else if(val == 77)
+      return 'E'; 
+   else if(val == 38)
+      return 'F'; 
+   else if(val == 76)
+      return 'G'; 
+   else if(val == 9)
+      return 'H'; 
+   else if(val == 75)
+      return 'I'; 
+   else if(val == 37)
+      return 'J';
+   else if(val == 74)
+      return 'K';
+   else if(val == 18)
+      return 'L';
+   else if(val == 73)
+      return 'M';
+   else if(val == 36)
+      return 'N';
+   else if(val == 72)
+      return 'O';
+   else if(val == 4)
+      return 'P';
+   else if(val == 71)
+      return 'Q';
+   else if(val == 35)
+      return 'R';
+   else if(val == 70)
+      return 'S';
+   else if(val == 17)
+      return 'T';
+   else if(val == 69)
+      return 'U';
+   else if(val == 34)
+      return 'V';
+   else if(val == 68)
+      return 'W';
+   else if(val == 8)
+      return 'X';
+   else if(val == 67)
+      return 'Y';
+   else if(val == 33)
+      return 'Z';
+}
+
+/***********************************************************************/
+/* Func: bluetooth()
+ * Desc: set the barestatus for the demo
+ * 
+ */
+void bluetooth(){
+
+   static uint8_t temp_vol;
+   if(cur_vol != 0)
+      temp_vol = cur_vol;
+  // cmd = USART_receive();
+   bluetooth_cmd = bluetooth_to_ASCII(bluetooth_cmd);
+   switch (bluetooth_cmd){
+      case '!':
+	 //Do nothing
+	 break;
+      case 'q':
+	 cur_vol = 0;
+	 bluetooth_cmd = '!';
+         break;
+
+      case 'p':
+	 cur_vol = temp_vol;
+	 bluetooth_cmd = '!';
+         break;
+
+      case 'l':
+         bare_status |= (1<<CHANGING_VOL);
+         if(cur_vol <100)
+            cur_vol += 10;
+	 bluetooth_cmd = '!';
+         vol_disp_time.hr = now.hr;
+         vol_disp_time.min= now.min;
+         vol_disp_time.sec = now.sec + 3;
+
+         //Wrap around
+         if(vol_disp_time.sec >=60 ){
+            ++vol_disp_time.min;
+            vol_disp_time.sec %= 60;
+         }
+         if(vol_disp_time.min>=60 ){
+            ++vol_disp_time.hr;
+            vol_disp_time.min %= 60;
+         }
+         if(vol_disp_time.hr>=24 ){
+            vol_disp_time.hr %= 24;
+         }
+         break;
+
+      case 'a':
+         bare_status |= (1<<CHANGING_VOL);
+         if(cur_vol >0)
+            cur_vol -= 10;
+	 bluetooth_cmd = '!';
+         vol_disp_time.hr = now.hr;
+         vol_disp_time.hr = now.hr;
+         vol_disp_time.min= now.min;
+         vol_disp_time.sec = now.sec + 3;
+
+         //Wrap around
+         if(vol_disp_time.sec >=60 ){
+            ++vol_disp_time.min;
+            vol_disp_time.sec %= 60;
+         }
+         if(vol_disp_time.min>=60 ){
+            ++vol_disp_time.hr;
+            vol_disp_time.min %= 60;
+         }
+         if(vol_disp_time.hr>=24 ){
+            vol_disp_time.hr %= 24;
+         }
+         break;
+
+   }
+
+}
+
+
+
+
+
+
 
 ///////////////////////////////////////////////////////////  ISR_SECTION
 
@@ -551,6 +693,29 @@ void mega48_temperature(){
 ISR(ADC_vect){
    OCR2 = (ADCH < 100) ? (100-ADCH) : 1; 
 }
+
+//-------------------------------------------------------------- USART0 
+ISR(USART0_RX_vect){
+   static uint8_t usart0_cntr=0;
+   //HERE
+   //save high temperature byte into mega128_temp
+   if(usart0_cntr==0){
+      mega48_temp = (UDR0<<7); 
+      mega48_temp <<= 1;
+      ++usart0_cntr;
+   }else{
+      //"OR" in the low temp byte to mega48_temp
+      mega48_temp |= UDR0;
+      --usart0_cntr;
+   }
+}
+
+
+//-------------------------------------------------------------- USART1 
+ISR(USART1_RX_vect){
+	bluetooth_cmd = UDR1;
+}
+
 
 
 //-------------------------------------------------------------- ISR_TIMER0
@@ -1105,6 +1270,7 @@ uint8_t main(){
    LCD_Init();
    //lcd_init();
    USART0_init(103);
+   USART1_init(103);
 
    //Set TWI pointer to the temperature output
    lm73_set_ptr_to_read();
@@ -1134,7 +1300,7 @@ uint8_t main(){
    PORTE |= 0x40; //pulse low to load switch values, else its in shift mode
 
    //PORTD Pin as an output for the BarGraph
-   DDRD |= (1<<PD2);	 
+   DDRD |= (1<<PD4);	 
 
    reset_radio();
    while(twi_busy());
@@ -1189,8 +1355,8 @@ uint8_t main(){
       while(!(SPSR & (1<<SPIF)));
 
       //Strobe BarGraph
-      PORTD |= (1<<PD2);
-      PORTD &= ~(1<<PD2);
+      PORTD |= (1<<PD4);
+      PORTD &= ~(1<<PD4);
 
       //Strobe Encoder 
       PORTE &= ~(1<<PD6);
@@ -1211,7 +1377,9 @@ uint8_t main(){
 
 	 //----------------------------------------------- USART
 	 mega48_temperature();
+	 bluetooth();
 
+//      snprintf(mega48_temp_str,9, " %2c.%-2c %c",bluetooth_cmd,bluetooth_cmd,bluetooth_cmd);
 	 bare_status &= ~(1<<CHK_TEMP);
       }
 

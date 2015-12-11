@@ -32,7 +32,7 @@ extern uint16_t eeprom_am_freq;
 extern uint16_t eeprom_sw_freq;
 extern uint8_t  eeprom_volume;
 
-extern uint16_t current_fm_freq = 8870;
+extern uint16_t current_fm_freq = 9570;
 extern uint16_t current_am_freq;
 extern uint16_t current_sw_freq;
 extern uint8_t  current_volume;

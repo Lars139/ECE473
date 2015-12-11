@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 void USART0_init(unsigned int baud);
+void USART1_init(unsigned int baud);
 void USART_transmit(unsigned char data);
 unsigned char USART_available(void);
 unsigned char USART_receive(void);

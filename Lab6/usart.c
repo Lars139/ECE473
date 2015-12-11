@@ -7,11 +7,41 @@ void USART0_init(uint16_t baud)
 	UBRR0L = baud;
 	
 	// Enable transmit and receive
-	UCSR0B = (1 << RXEN0) | (1 << TXEN0);
+	UCSR0B = (1 << RXEN0) | (1 << TXEN0) | (1<<RXCIE0);
 	
 	// Set frame format: 8 data bits, 1 stop bit
 	UCSR0C = (1 << UCSZ01) | (1 << UCSZ00);
 }
+
+void USART1_init(uint16_t baud)
+{
+	// Set baud rate
+	UBRR1H = baud>>8;
+	UBRR1L = baud;
+	
+	// Enable transmit and receive
+	UCSR1B = (1 << RXEN1) | (1 << TXEN1) | (1<<RXCIE1);
+	
+	// Set frame format: 8 data bits, 1 stop bit
+	UCSR1C = (1 << UCSZ11) | (1 << UCSZ10);
+}
+
+unsigned char USART1_receive()
+{
+	while (!(UCSR1A & (1 << RXC1)));
+	
+	return UDR1;
+}
+
+void USART1_transmit(unsigned char data)
+{
+	while (!(UCSR1A & (1 << UDRE1)));
+	
+	UDR1 = data;
+}
+
+
+
 
 void USART_transmit(unsigned char data)
 {
